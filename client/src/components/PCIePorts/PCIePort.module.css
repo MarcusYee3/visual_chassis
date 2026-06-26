@@ -1,0 +1,70 @@
+.port {
+  flex: 1;
+  height: 36px;
+  background: linear-gradient(180deg, #332650 0%, #281e40 50%, #2e2348 100%);
+  border: 1px solid #333;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.connector {
+  width: 10px;
+  height: 16px;
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, #222 0%, #1a1a1a 100%);
+  border: 1px solid #444;
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.6);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.connector::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  background: repeating-linear-gradient(
+    180deg,
+    #c8a832 0px,
+    #c8a832 2px,
+    transparent 2px,
+    transparent 4px
+  );
+  border-radius: 1px;
+}
+
+.label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #aaa;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+.active {
+  border-color: rgba(167, 139, 250, 0.2);
+}
+
+.inactive {
+  opacity: 0.5;
+}
+
+.port:hover {
+  background: linear-gradient(180deg, #3c2e5e 0%, #30264c 50%, #362a55 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}

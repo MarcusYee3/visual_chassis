@@ -1,0 +1,76 @@
+.chip {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.body {
+  background: linear-gradient(180deg, #242414 0%, #1a1a0e 100%);
+  border: 1px solid #3a3a22;
+  border-top: none;
+  border-bottom: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 4px;
+  gap: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 180, 0.04);
+  transition: all 0.15s;
+}
+
+.pinRow {
+  height: 6px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0px,
+    transparent 2px,
+    #555535 2px,
+    #555535 4px
+  );
+  border: 1px solid #333322;
+  transition: border-color 0.15s;
+}
+
+.label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a8a55;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.partNum {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 6px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: #55553a;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.interactive {
+  cursor: pointer;
+}
+
+.interactive:hover .body {
+  background: linear-gradient(180deg, #343420 0%, #28281a 100%);
+  border-color: #5a5a32;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 180, 0.08),
+    0 0 6px rgba(180, 180, 60, 0.15);
+}
+
+.interactive:hover .pinRow {
+  border-color: #555542;
+}
+
+.interactive:active .body {
+  background: linear-gradient(180deg, #1e1e10 0%, #141408 100%);
+  box-shadow: none;
+}
