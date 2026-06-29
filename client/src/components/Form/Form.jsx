@@ -1,13 +1,11 @@
 import { useState } from "react";
 import styles from "./Form.module.css";
-import { getRecordsBySerial } from "../../services/api";
+import { validateSerialNumber } from "../../services/api";
 
 const ServerForm = ({ onSubmit }) => {
-    const [serverData, setServerData] = useState({
-        sn : "",
-        wo : ""
-    });
+    const [serverData, setServerData] = useState({ sn: "", wo: "" });
     const [error, setError] = useState("");
+    const [validating, setValidating] = useState(false);
 
     const handleChange = (e) => {
         setServerData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
@@ -17,16 +15,21 @@ const ServerForm = ({ onSubmit }) => {
     const handleEvent = async (event) => {
         event.preventDefault();
         const isConfirm = window.confirm(`Please confirm server detail: \n\nSN: ${serverData.sn}\nWO: ${serverData.wo}`);
+        if (!isConfirm) return;
 
-        if (isConfirm) {
-            const result = await getRecordsBySerial(serverData.sn);
-            const isValidSn = result.total > 0;
-
-            if (isValidSn) {
-                onSubmit(serverData, result.records);
+        setValidating(true);
+        setError("");
+        try {
+            const result = await validateSerialNumber(serverData.sn);
+            if (result.valid) {
+                onSubmit(serverData);
             } else {
-                setError("No records found for this serial number.");
+                setError("SN is invalid.");
             }
+        } catch (e) {
+            setError("Could not reach server — check your connection.");
+        } finally {
+            setValidating(false);
         }
     };
 
@@ -34,14 +37,16 @@ const ServerForm = ({ onSubmit }) => {
         <form className={styles.form} onSubmit={handleEvent}>
             <label className={styles.label}>
                 Serial Number
-                <input className={styles.input} type="text" name="sn" value={serverData.sn} onChange={handleChange} required />
+                <input className={styles.input} type="text" name="sn" value={serverData.sn} onChange={handleChange} required disabled={validating} />
             </label>
             <label className={styles.label}>
                 Work Order
-                <input className={styles.input} type="text" name="wo" value={serverData.wo} onChange={handleChange} placeholder="Optional" />
+                <input className={styles.input} type="text" name="wo" value={serverData.wo} onChange={handleChange} placeholder="Optional" disabled={validating} />
             </label>
             {error && <p className={styles.error}>{error}</p>}
-            <button className={styles.button} type="submit">Submit</button>
+            <button className={styles.button} type="submit" disabled={validating}>
+                {validating ? "Validating…" : "Submit"}
+            </button>
         </form>
     );
 };
