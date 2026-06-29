@@ -1,8 +1,8 @@
 import styles from './E1SBoard.module.css';
 
-function E1SBoard({ id, name }) {
+function E1SBoard({ id, name, faulted = false }) {
   return (
-    <div id={id} className={styles.board} aria-label={name}>
+    <div id={id} className={`${styles.board} ${faulted ? styles.faulted : ''}`} aria-label={name}>
       <div className={styles.handle}>
         <div className={styles.handleGrip} />
       </div>

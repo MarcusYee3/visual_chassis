@@ -33,3 +33,12 @@ h1 span {
 * {
   box-sizing: border-box;
 }
+
+@keyframes faultPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(255, 68, 68, 0.7), 0 0 36px rgba(255, 68, 68, 0.3);
+  }
+}

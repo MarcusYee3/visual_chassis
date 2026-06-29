@@ -70,6 +70,27 @@
   border-color: #555542;
 }
 
+.faulted .body {
+  border-color: #ff4444;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 100, 100, 0.08),
+    0 0 8px rgba(255, 68, 68, 0.4);
+  animation: retimerFault 1.4s ease-in-out infinite;
+}
+
+.faulted .label {
+  color: #ff9999;
+}
+
+.faulted .pinRow {
+  border-color: #552222;
+}
+
+@keyframes retimerFault {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255,100,100,0.08), 0 0 6px rgba(255,68,68,0.3); }
+  50% { box-shadow: inset 0 1px 0 rgba(255,100,100,0.08), 0 0 14px rgba(255,68,68,0.7); }
+}
+
 .interactive:active .body {
   background: linear-gradient(180deg, #1e1e10 0%, #141408 100%);
   box-shadow: none;

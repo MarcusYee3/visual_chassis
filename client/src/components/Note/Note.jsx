@@ -1,22 +1,31 @@
 import { useState } from 'react';
 import styles from './Note.module.css';
+import { diagnoseServer } from '../../services/api';
 
-function isOsfpError(record) {
-  return record.ok === '0' && (
-    record.taskcase_message?.includes('OSFP') ||
-    record.taskcase?.includes('OSFP')
-  );
-}
-
-function NoteEntry({ record, onHighlight }) {
+function NoteEntry({ record, onHighlight, serialNumber }) {
   const [expanded, setExpanded] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const isFail = record.ok === '0';
 
-  const handleToggle = () => {
+  const handleToggle = async () => {
     const next = !expanded;
     setExpanded(next);
-    if (onHighlight && isOsfpError(record)) {
-      onHighlight(next ? 'gbb' : null);
+
+    if (!next) {
+      onHighlight?.(null);
+      return;
+    }
+
+    if (isFail && serialNumber) {
+      setDiagnosing(true);
+      try {
+        const result = await diagnoseServer('server-1', serialNumber);
+        onHighlight?.({ faults: result.faults });
+      } catch (e) {
+        console.error('Diagnose failed:', e);
+      } finally {
+        setDiagnosing(false);
+      }
     }
   };
 
@@ -32,6 +41,7 @@ function NoteEntry({ record, onHighlight }) {
         <span className={styles.taskcase}>{record.taskcase}</span>
         <div className={styles.headerRight}>
           <span className={styles.timestamp}>{record.Finished}</span>
+          {diagnosing && <span className={styles.diagnosing}>scanning…</span>}
           <span className={isFail ? styles.statusFail : styles.statusPass}>
             {isFail ? 'FAIL' : 'PASS'}
           </span>
@@ -56,7 +66,7 @@ function sortRecords(records, sortBy) {
   return sorted;
 }
 
-function Note({ records, onHighlight }) {
+function Note({ records, onHighlight, serialNumber }) {
   const [collapsed, setCollapsed] = useState(false);
   const [sortBy, setSortBy] = useState('time');
 
@@ -95,7 +105,7 @@ function Note({ records, onHighlight }) {
             </div>
             <div className={styles.list}>
               {sortRecords(records, sortBy).map((record, i) => (
-                <NoteEntry key={i} record={record} onHighlight={onHighlight} />
+                <NoteEntry key={i} record={record} onHighlight={onHighlight} serialNumber={serialNumber} />
               ))}
             </div>
           </>

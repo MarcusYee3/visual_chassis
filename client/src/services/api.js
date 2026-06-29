@@ -67,6 +67,15 @@ export const getPSUPorts = async (serverId) => {
   return response.json();
 };
 
+// Diagnostics
+export const diagnoseServer = async (serverId, serialNumber) => {
+  const response = await fetch(
+    `${API_BASE}/servers/${serverId}/diagnose?serialNumber=${encodeURIComponent(serialNumber)}`
+  );
+  if (!response.ok) throw new Error('Diagnose failed');
+  return response.json();
+};
+
 // Report operations
 export const getRecordsBySerial = async (serialNumber) => {
   const response = await fetch(`${API_BASE}/reports/serial/${serialNumber}`);

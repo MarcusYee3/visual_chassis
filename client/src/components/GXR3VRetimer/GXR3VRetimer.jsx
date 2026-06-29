@@ -1,10 +1,10 @@
 import styles from './GXR3VRetimer.module.css';
 
-function GXR3VRetimer({ id, name, onClick }) {
+function GXR3VRetimer({ id, name, onClick, faulted = false }) {
   return (
     <div
       id={id}
-      className={`${styles.chip} ${onClick ? styles.interactive : ''}`}
+      className={`${styles.chip} ${onClick ? styles.interactive : ''} ${faulted ? styles.faulted : ''}`}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}

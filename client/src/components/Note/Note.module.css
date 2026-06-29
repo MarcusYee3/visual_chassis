@@ -150,6 +150,20 @@
   background: rgba(96, 165, 250, 0.1);
 }
 
+.diagnosing {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  color: #facc15;
+  letter-spacing: 0.06em;
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .message {
   margin: 8px 0 0;
   font-family: 'Inter', sans-serif;

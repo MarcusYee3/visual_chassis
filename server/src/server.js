@@ -6,6 +6,7 @@ import osfpRouter from './routes/osfp.js';
 import pcieRouter from './routes/pcie.js';
 import psuRouter from './routes/psu.js';
 import reportsRouter from './routes/reports.js';
+import diagnoseRouter from './routes/diagnose.js';
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.use('/api/servers/:serverId/gbb/osfp', osfpRouter);
 app.use('/api/servers/:serverId/gbb/osfp/:osfpId/pcie', pcieRouter);
 app.use('/api/servers/:serverId/psu', psuRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/servers/:serverId/diagnose', diagnoseRouter);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
