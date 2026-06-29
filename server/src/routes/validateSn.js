@@ -54,7 +54,11 @@ router.get('/', async (req, res) => {
     }
   } catch (err) {
     console.error('[validate-sn]', err.message);
-    res.status(500).json({ error: err.message });
+    const isNetworkErr = err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT';
+    const message = isNetworkErr
+      ? `Cannot reach ${process.env.CMD_HOST} — check VPN / network`
+      : err.message;
+    res.status(503).json({ error: message });
   } finally {
     try { conn.end(); } catch {}
   }

@@ -48,8 +48,9 @@ export const getPSUPorts = async (serverId) => {
 
 export const validateSerialNumber = async (sn) => {
   const response = await fetch(`${API_BASE}/validate-sn?sn=${encodeURIComponent(sn)}`);
-  if (!response.ok) throw new Error('Validation request failed');
-  return response.json();
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Validation request failed');
+  return data;
 };
 
 export const diagnoseServer = async (serverId, serialNumber) => {

@@ -27,7 +27,7 @@ const ServerForm = ({ onSubmit }) => {
                 setError("SN is invalid.");
             }
         } catch (e) {
-            setError("Could not reach server — check your connection.");
+            setError(e.message || "Could not reach server.");
         } finally {
             setValidating(false);
         }
