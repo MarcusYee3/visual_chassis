@@ -94,7 +94,7 @@ router.get('/', async (req, res) => {
 
       conn.on('error', (e) => finish(reject, e));
       conn.on('keyboard-interactive', (name, instructions, lang, prompts, finish2) => {
-        finish2([process.env.ILOM_PASSWORD || 'change me']);
+        finish2([process.env.ILOM_PASSWORD || 'changeme']);
       });
       conn.on('ready', async () => {
         try {
@@ -110,7 +110,7 @@ router.get('/', async (req, res) => {
         host: ilomIp,
         port: 22,
         username: process.env.ILOM_USER || 'root',
-        password: process.env.ILOM_PASSWORD || 'change me',
+        password: process.env.ILOM_PASSWORD || 'changeme',
         tryKeyboard: true,
         readyTimeout: 20000,
       });
