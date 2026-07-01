@@ -12,11 +12,16 @@ router.get('/', (req, res) => {
     return res.status(400).json({ error: 'Invalid SN format' });
   }
 
-  exec(`eve_ip ${sn}`, (error, stdout, stderr) => {
+  exec(`eve_ip ${sn}`, { env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/local/bin:/home/tester/bin' } }, (error, stdout, stderr) => {
     const output = stdout + stderr;
-    console.log('[validate-sn] eve_ip output:', output.trim());
+    console.log('[validate-sn] error:', error?.message);
+    console.log('[validate-sn] output:', output.trim());
 
-    const isError = /not subscriptable|NoneType|TypeError|Traceback/i.test(output);
+    if (error && !output.trim()) {
+      return res.status(503).json({ error: `eve_ip failed: ${error.message}` });
+    }
+
+    const isError = /not subscriptable|NoneType|TypeError|Traceback|command not found/i.test(output);
     const ipMatch = output.match(/(\d{1,3}(?:\.\d{1,3}){3})/);
 
     if (isError || !ipMatch) {
