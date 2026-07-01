@@ -22,7 +22,8 @@ router.get('/', (req, res) => {
     }
 
     const isError = /not subscriptable|NoneType|TypeError|Traceback|command not found/i.test(output);
-    const ilomMatch = output.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
+    const ilomMatch = output.match(/ILOM\s+[\w:]+\s+(\d{1,3}(?:\.\d{1,3}){3})/i);
+    console.log('[validate-sn] isError:', isError, '| ilomMatch:', ilomMatch?.[1]);
 
     if (isError || !ilomMatch) {
       res.json({ valid: false });
