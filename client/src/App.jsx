@@ -10,6 +10,7 @@ function App() {
   const [faults, setFaults] = useState(EMPTY_FAULTS);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnoseError, setDiagnoseError] = useState('');
+  const [diagnoseStatus, setDiagnoseStatus] = useState('');
 
   const handleFormSubmit = async (formData) => {
     await updateServer('server-1', { serialNumber: formData.sn });
@@ -18,9 +19,12 @@ function App() {
 
     setDiagnosing(true);
     setDiagnoseError('');
+    setDiagnoseStatus('');
     try {
       const result = await diagnoseServer('server-1', formData.sn);
-      setFaults(result.faults ?? EMPTY_FAULTS);
+      const f = result.faults ?? EMPTY_FAULTS;
+      setFaults(f);
+      setDiagnoseStatus(f.components.length === 0 ? 'No open problems detected.' : `Faults detected: ${f.components.join(', ')}`);
     } catch (e) {
       setDiagnoseError(e.message || 'Diagnosis failed');
     } finally {
@@ -32,6 +36,7 @@ function App() {
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
       <ServerForm onSubmit={handleFormSubmit} />
       {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
+      {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}
       {diagnoseError && <p style={{ color: 'red' }}>{diagnoseError}</p>}
       <ServerOverview refreshKey={refreshKey} faults={faults} />
     </div>
