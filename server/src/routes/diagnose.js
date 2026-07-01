@@ -79,7 +79,7 @@ router.get('/', async (req, res) => {
 
   try {
     // Step 1: get ILOM IP locally — no SSH needed, we're already on the cmd host
-    const eveOut = await localExec(`bash -l -c 'eve_ip ${serialNumber}'`);
+    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve.ip.pyc ${serialNumber}`);
     const ipMatch = eveOut.match(/(\d{1,3}(?:\.\d{1,3}){3})/);
     if (!ipMatch) {
       return res.status(400).json({ error: `No IP from eve_ip: ${eveOut.trim()}` });
