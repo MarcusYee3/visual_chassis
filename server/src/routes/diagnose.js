@@ -80,11 +80,11 @@ router.get('/', async (req, res) => {
   try {
     // Step 1: get ILOM IP locally — no SSH needed, we're already on the cmd host
     const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-    const ipMatch = eveOut.match(/(\d{1,3}(?:\.\d{1,3}){3})/);
-    if (!ipMatch) {
-      return res.status(400).json({ error: `No IP from eve_ip: ${eveOut.trim()}` });
+    const ilomMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
+    if (!ilomMatch) {
+      return res.status(400).json({ error: `ILOM not found or not up: ${eveOut.trim()}` });
     }
-    const ilomIp = ipMatch[1];
+    const ilomIp = ilomMatch[1];
     console.log('[diagnose] ILOM IP:', ilomIp);
 
     // Step 2: verify ILOM is reachable before attempting SSH

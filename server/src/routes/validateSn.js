@@ -22,12 +22,12 @@ router.get('/', (req, res) => {
     }
 
     const isError = /not subscriptable|NoneType|TypeError|Traceback|command not found/i.test(output);
-    const ipMatch = output.match(/(\d{1,3}(?:\.\d{1,3}){3})/);
+    const ilomMatch = output.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
 
-    if (isError || !ipMatch) {
+    if (isError || !ilomMatch) {
       res.json({ valid: false });
     } else {
-      res.json({ valid: true, ilomIp: ipMatch[1] });
+      res.json({ valid: true, ilomIp: ilomMatch[1] });
     }
   });
 });
