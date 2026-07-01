@@ -104,7 +104,10 @@ router.get('/', async (req, res) => {
       conn.on('ready', async () => {
         try {
           const ilomOut = await sshExec(conn, 'show /System/Open_Problems');
-          finish(resolve, parseIlomProblems(ilomOut));
+          console.log('[diagnose] ILOM raw output:\n', ilomOut);
+          const parsed = parseIlomProblems(ilomOut);
+          console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
+          finish(resolve, parsed);
         } catch (e) { finish(reject, e); }
       });
 
