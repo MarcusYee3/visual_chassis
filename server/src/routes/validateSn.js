@@ -12,7 +12,7 @@ router.get('/', (req, res) => {
     return res.status(400).json({ error: 'Invalid SN format' });
   }
 
-  exec(`eve_ip ${sn}`, { env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/local/bin:/home/tester/bin' } }, (error, stdout, stderr) => {
+  exec(`bash -l -c 'eve_ip ${sn}'`, (error, stdout, stderr) => {
     const output = stdout + stderr;
     console.log('[validate-sn] error:', error?.message);
     console.log('[validate-sn] output:', output.trim());
