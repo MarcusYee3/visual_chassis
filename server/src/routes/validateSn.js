@@ -34,11 +34,16 @@ router.get('/', async (req, res) => {
         } catch (e) { finish(reject, e); }
       });
 
+      conn.on('keyboard-interactive', (_n, _i, _l, prompts, finish) => {
+        finish(prompts.map(() => process.env.CMD_HOST_PASSWORD));
+      });
+
       conn.connect({
         host: process.env.CMD_HOST,
         port: 22,
-        username: process.env.CMD_HOST_USER || 'root',
+        username: process.env.CMD_HOST_USER,
         password: process.env.CMD_HOST_PASSWORD,
+        tryKeyboard: true,
         readyTimeout: 20000,
       });
     });
