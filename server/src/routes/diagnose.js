@@ -93,6 +93,9 @@ router.get('/', async (req, res) => {
       const finish = (fn, val) => { if (!settled) { settled = true; fn(val); } };
 
       conn.on('error', (e) => finish(reject, e));
+      conn.on('keyboard-interactive', (name, instructions, lang, prompts, finish2) => {
+        finish2([process.env.ILOM_PASSWORD || 'change me']);
+      });
       conn.on('ready', async () => {
         try {
           const ilomOut = await sshExec(conn, 'show /System/Open_Problems');
@@ -108,6 +111,7 @@ router.get('/', async (req, res) => {
         port: 22,
         username: process.env.ILOM_USER || 'root',
         password: process.env.ILOM_PASSWORD || 'change me',
+        tryKeyboard: true,
         readyTimeout: 20000,
       });
     });
