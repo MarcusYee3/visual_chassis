@@ -1,23 +1,38 @@
 import { useState } from 'react';
 import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
-import { updateServer } from './services/api';
+import { updateServer, diagnoseServer } from './services/api';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [faults, setFaults] = useState(EMPTY_FAULTS);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnoseError, setDiagnoseError] = useState('');
 
   const handleFormSubmit = async (formData) => {
     await updateServer('server-1', { serialNumber: formData.sn });
     setFaults(EMPTY_FAULTS);
     setRefreshKey((k) => k + 1);
+
+    setDiagnosing(true);
+    setDiagnoseError('');
+    try {
+      const result = await diagnoseServer('server-1', formData.sn);
+      setFaults(result.faults ?? EMPTY_FAULTS);
+    } catch (e) {
+      setDiagnoseError(e.message || 'Diagnosis failed');
+    } finally {
+      setDiagnosing(false);
+    }
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
       <ServerForm onSubmit={handleFormSubmit} />
+      {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
+      {diagnoseError && <p style={{ color: 'red' }}>{diagnoseError}</p>}
       <ServerOverview refreshKey={refreshKey} faults={faults} />
     </div>
   );
