@@ -87,15 +87,7 @@ router.get('/', async (req, res) => {
     const ilomIp = ilomMatch[1];
     console.log('[diagnose] ILOM IP:', ilomIp);
 
-    // Step 2: verify ILOM is reachable before attempting SSH
-    await new Promise((resolve, reject) => {
-      exec(`ping -c 1 -W 3 ${ilomIp}`, (error) => {
-        if (error) reject(new Error(`ILOM at ${ilomIp} is not reachable`));
-        else resolve();
-      });
-    });
-
-    // Step 3: single SSH hop directly to the ILOM
+    // Step 2: SSH directly to the ILOM
     const result = await new Promise((resolve, reject) => {
       let settled = false;
       const finish = (fn, val) => { if (!settled) { settled = true; fn(val); } };
