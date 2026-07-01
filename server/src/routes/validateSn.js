@@ -45,6 +45,7 @@ router.get('/', async (req, res) => {
         password: process.env.CMD_HOST_PASSWORD,
         tryKeyboard: true,
         readyTimeout: 20000,
+        debug: (msg) => console.log('[ssh2]', msg),
       });
     });
 
