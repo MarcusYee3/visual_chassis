@@ -1,0 +1,106 @@
+.fan {
+  background: linear-gradient(180deg, #1a2030 0%, #111520 100%);
+  border: 1px solid #2a3550;
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 4px 6px;
+  position: relative;
+  transition: border-color 0.2s;
+}
+
+.fan:hover {
+  border-color: #4a6090;
+}
+
+.faulted {
+  border-color: #ff4444;
+  box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15);
+  animation: faultPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes faultPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15); }
+  50%       { box-shadow: 0 0 18px rgba(255, 68, 68, 0.7), 0 0 36px rgba(255, 68, 68, 0.3); }
+}
+
+.spinner {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  animation: spin 2s linear infinite;
+}
+
+.fan.faulted .spinner {
+  animation: spin 2s linear infinite, faultColor 1.4s ease-in-out infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.blade {
+  position: absolute;
+  width: 10px;
+  height: 14px;
+  background: linear-gradient(180deg, #3a5080 0%, #243060 100%);
+  border-radius: 50% 50% 2px 2px;
+  left: 50%;
+  top: 50%;
+  transform-origin: 50% 100%;
+}
+
+.fan.faulted .blade {
+  background: linear-gradient(180deg, #804040 0%, #602020 100%);
+}
+
+.blade:nth-child(1) { transform: translateX(-50%) translateY(-100%) rotate(0deg);   }
+.blade:nth-child(2) { transform: translateX(-50%) translateY(-100%) rotate(120deg);  }
+.blade:nth-child(3) { transform: translateX(-50%) translateY(-100%) rotate(240deg);  }
+
+.hub {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #1a2030;
+  border: 1px solid #3a5080;
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.fan.faulted .hub {
+  border-color: #ff4444;
+}
+
+.led {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 5px rgba(34, 197, 94, 0.7);
+  flex-shrink: 0;
+}
+
+.faulted .led {
+  background: #ff4444;
+  box-shadow: 0 0 5px rgba(255, 68, 68, 0.9);
+}
+
+.label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4a6090;
+}
+
+.faulted .label {
+  color: #ff9999;
+}

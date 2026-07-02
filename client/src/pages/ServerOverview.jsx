@@ -6,6 +6,7 @@ import PCIePort from '../components/PCIePorts/PCIePort';
 import PSUPort from '../components/PSUPorts/PSUPort';
 import E1SBoard from '../components/E1SBoards/E1SBoard';
 import GXR3VRetimer from '../components/GXR3VRetimer/GXR3VRetimer';
+import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
@@ -41,6 +42,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const [osfpModules, setOsfpModules] = useState([]);
   const [expandedOsfp, setExpandedOsfp] = useState({});
   const [pciePorts, setPciePorts] = useState({});
+  const [expandedGpu, setExpandedGpu] = useState(false);
   const [expandedIob, setExpandedIob] = useState(false);
   const [expandedPsu, setExpandedPsu] = useState(false);
   const [psuPorts, setPsuPorts] = useState([]);
@@ -75,6 +77,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   }, [expandedPsu, psuPorts.length]);
 
   const handleGbbClick = () => setExpandedGbb(!expandedGbb);
+  const handleGpuClick = () => setExpandedGpu(!expandedGpu);
   const handleIobClick = () => setExpandedIob(!expandedIob);
   const handlePsuClick = () => setExpandedPsu(!expandedPsu);
 
@@ -158,10 +161,28 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         )}
 
         {/* GPU Baseboard */}
-        <ServerComponent id="gpu-baseboard" name="Nvidia B300 GPU Baseboard"
-          color={has('gpu') ? 'alert' : 'purple'}
-          interactive={false}
-          style={{ height: '140px' }} />
+        {expandedGpu ? (
+          <div style={{ width: '100%' }}>
+            <div style={backLinkStyle} onClick={handleGpuClick} role="button" tabIndex={0}
+              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleGpuClick()}>
+              ← Nvidia B300 GPU Baseboard — Fan Modules
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              {[25, 19, 13, 7, 1].map((rowStart) => (
+                <div key={rowStart} style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
+                  {Array.from({ length: 6 }, (_, i) => rowStart + i).map((n) => (
+                    <FanModule key={n} number={n} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <ServerComponent id="gpu-baseboard" name="Nvidia B300 GPU Baseboard"
+            color={has('gpu') ? 'alert' : 'purple'}
+            interactive onClick={handleGpuClick}
+            style={{ height: '140px' }} />
+        )}
 
         {/* IOB Tray */}
         {expandedIob ? (
