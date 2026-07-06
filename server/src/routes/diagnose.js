@@ -1,24 +1,13 @@
 import express from 'express';
 import { exec } from 'child_process';
-import { Client } from 'ssh2';
 
 const router = express.Router({ mergeParams: true });
 
-function sshExec(conn, command) {
-  return new Promise((resolve, reject) => {
-    conn.exec(command, (err, stream) => {
-      if (err) return reject(err);
-      let out = '';
-      stream.on('data', (d) => (out += d.toString()));
-      stream.stderr.on('data', (d) => (out += d.toString()));
-      stream.on('close', () => resolve(out));
-    });
-  });
-}
+const SSHPASS = '/home/tester/.local/bin/sshpass';
 
 function localExec(command, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
-    const child = exec(command, { timeout: timeoutMs }, (error, stdout, stderr) => {
+    exec(command, { timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error?.killed) return reject(new Error(`Command timed out: ${command}`));
       resolve(stdout + stderr);
     });
@@ -94,8 +83,6 @@ router.get('/', async (req, res) => {
     return res.status(400).json({ error: 'Invalid serial number format' });
   }
 
-  const conn = new Client();
-
   try {
     // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
     let ilomIp = ilomIpParam;
@@ -109,40 +96,20 @@ router.get('/', async (req, res) => {
     }
     console.log('[diagnose] ILOM IP:', ilomIp);
 
-    // Step 2: SSH directly to the ILOM
-    const result = await new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, val) => { if (!settled) { settled = true; fn(val); } };
+    // Step 2: SSH to ILOM using native ssh + sshpass — same as running manually
+    const ilomUser = process.env.ILOM_USER || 'root';
+    const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
+    const sshCmd = `${SSHPASS} -p '${ilomPassword}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${ilomUser}@${ilomIp} 'show /System/Open_Problems'`;
 
-      conn.on('error', (e) => finish(reject, e));
-      conn.on('keyboard-interactive', (name, instructions, lang, prompts, finish2) => {
-        finish2([process.env.ILOM_PASSWORD || 'changeme']);
-      });
-      conn.on('ready', async () => {
-        try {
-          const ilomOut = await sshExec(conn, 'show /System/Open_Problems');
-          console.log('[diagnose] ILOM raw output:\n', ilomOut);
-          const parsed = parseIlomProblems(ilomOut);
-          console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
-          finish(resolve, parsed);
-        } catch (e) { finish(reject, e); }
-      });
+    const ilomOut = await localExec(sshCmd, 20000);
+    console.log('[diagnose] ILOM raw output:\n', ilomOut);
+    const parsed = parseIlomProblems(ilomOut);
+    console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
 
-      conn.connect({
-        host: ilomIp,
-        port: 22,
-        username: process.env.ILOM_USER || 'root',
-        tryKeyboard: true,   // skip password auth, go straight to keyboard-interactive
-        readyTimeout: 20000,
-      });
-    });
-
-    res.json(result);
+    res.json(parsed);
   } catch (err) {
     console.error('[diagnose]', err.message);
     res.status(500).json({ error: err.message });
-  } finally {
-    try { conn.end(); } catch {}
   }
 });
 
