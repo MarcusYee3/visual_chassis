@@ -51,7 +51,7 @@ function parseIlomProblems(output) {
   }
   if (!compSet.has('psu') && /class\s*=\s*PSUMOD/i.test(output)) addComp('psu');
 
-  if (/\/SYS\/GPU|GPU[\s_]?BASEBOARD|GPUBD/i.test(output)) addComp('gpu');
+  if (/\/SYS\/GPU|GPU[\s_]?BASEBOARD|GPUBD|number of GPU|GPU.*not present/i.test(output)) addComp('gpu');
   if (/\/SYS\/BMC\b/i.test(output)) addComp('bmc');
   if (/\/SYS\/ROT\b/i.test(output)) addComp('rot');
 
@@ -132,8 +132,7 @@ router.get('/', async (req, res) => {
         host: ilomIp,
         port: 22,
         username: process.env.ILOM_USER || 'root',
-        password: process.env.ILOM_PASSWORD || 'changeme',
-        tryKeyboard: true,
+        tryKeyboard: true,   // skip password auth, go straight to keyboard-interactive
         readyTimeout: 20000,
       });
     });
