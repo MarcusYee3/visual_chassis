@@ -5,9 +5,9 @@ const router = express.Router({ mergeParams: true });
 
 const SSHPASS = '/home/tester/.local/bin/sshpass';
 
-function localExec(command, timeoutMs = 15000) {
+function localExec(command, timeoutMs = 15000, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    exec(command, { timeout: timeoutMs }, (error, stdout, stderr) => {
+    exec(command, { timeout: timeoutMs, env: { ...process.env, ...extraEnv } }, (error, stdout, stderr) => {
       if (error?.killed) return reject(new Error(`Command timed out: ${command}`));
       resolve(stdout + stderr);
     });
@@ -96,12 +96,12 @@ router.get('/', async (req, res) => {
     }
     console.log('[diagnose] ILOM IP:', ilomIp);
 
-    // Step 2: SSH to ILOM using native ssh + sshpass — same as running manually
+    // Step 2: SSH to ILOM using native ssh + sshpass
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
-    const sshCmd = `${SSHPASS} -p '${ilomPassword}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${ilomUser}@${ilomIp} 'show /System/Open_Problems'`;
+    const sshCmd = `${SSHPASS} -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp} 'show /System/Open_Problems'`;
 
-    const ilomOut = await localExec(sshCmd, 20000);
+    const ilomOut = await localExec(sshCmd, 20000, { SSHPASS: ilomPassword });
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
     const parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
