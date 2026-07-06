@@ -21,7 +21,7 @@ function App() {
     setDiagnoseError('');
     setDiagnoseStatus('');
     try {
-      const result = await diagnoseServer('server-1', formData.sn);
+      const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
       setDiagnoseStatus(f.components.length === 0 ? 'No open problems detected.' : `Faults detected: ${f.components.join(', ')}`);

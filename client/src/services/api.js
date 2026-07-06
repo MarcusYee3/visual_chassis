@@ -53,10 +53,10 @@ export const validateSerialNumber = async (sn) => {
   return data;
 };
 
-export const diagnoseServer = async (serverId, serialNumber) => {
-  const response = await fetch(
-    `${API_BASE}/servers/${serverId}/diagnose?serialNumber=${encodeURIComponent(serialNumber)}`
-  );
+export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
+  const params = new URLSearchParams({ serialNumber });
+  if (ilomIp) params.set('ilomIp', ilomIp);
+  const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
   if (!response.ok) throw new Error('Diagnose failed');
   return response.json();
 };

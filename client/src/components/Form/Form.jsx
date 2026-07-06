@@ -22,7 +22,7 @@ const ServerForm = ({ onSubmit }) => {
         try {
             const result = await validateSerialNumber(serverData.sn);
             if (result.valid) {
-                onSubmit(serverData);
+                onSubmit({ ...serverData, ilomIp: result.ilomIp });
             } else {
                 setError("SN is invalid.");
             }

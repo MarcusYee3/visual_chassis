@@ -16,9 +16,10 @@ function sshExec(conn, command) {
   });
 }
 
-function localExec(command) {
+function localExec(command, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
-    exec(command, (error, stdout, stderr) => {
+    const child = exec(command, { timeout: timeoutMs }, (error, stdout, stderr) => {
+      if (error?.killed) return reject(new Error(`Command timed out: ${command}`));
       resolve(stdout + stderr);
     });
   });
@@ -86,7 +87,7 @@ function parseIlomProblems(output) {
 }
 
 router.get('/', async (req, res) => {
-  const { serialNumber } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -96,13 +97,16 @@ router.get('/', async (req, res) => {
   const conn = new Client();
 
   try {
-    // Step 1: get ILOM IP locally — no SSH needed, we're already on the cmd host
-    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-    const ilomMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
-    if (!ilomMatch) {
-      return res.status(400).json({ error: `ILOM not found or not up: ${eveOut.trim()}` });
+    // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
+    let ilomIp = ilomIpParam;
+    if (!ilomIp) {
+      const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+      const ilomMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
+      if (!ilomMatch) {
+        return res.status(400).json({ error: `ILOM not found or not up: ${eveOut.trim()}` });
+      }
+      ilomIp = ilomMatch[1];
     }
-    const ilomIp = ilomMatch[1];
     console.log('[diagnose] ILOM IP:', ilomIp);
 
     // Step 2: SSH directly to the ILOM
