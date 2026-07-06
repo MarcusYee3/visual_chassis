@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hyve Server Visualizer — Workflow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    body {
+      background: #0f1117;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 1.4rem;
+      letter-spacing: 0.08em;
+      color: #7eb8f7;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+    p.sub {
+      font-size: 0.8rem;
+      color: #666;
+      margin-bottom: 32px;
+    }
+    .mermaid {
+      background: #161b22;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 4px 32px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+  <h1>Hyve LionKing B300 — Server Visualizer Workflow</h1>
+  <p class="sub">hyve-cmd101-eve-bld4 &nbsp;|&nbsp; React + Express + Oracle ILOM</p>
+
+  <div class="mermaid">
+flowchart TD
+    A([🖥️ User opens browser]) --> B[Enter Serial Number + Work Order]
+    B --> C[Click Submit]
+    C --> D{Confirm dialog}
+    D -- Cancel --> B
+    D -- OK --> E[Frontend: GET /api/validate-sn?sn=SN]
+
+    E --> F["eve-bld4 local exec:\npython3 eve_ip.pyc &lt;SN&gt;"]
+    F --> G{ILOM row found\nand status = up?}
+    G -- No --> H([❌ Show: SN is invalid])
+    G -- Yes --> I[Extract ILOM IP]
+
+    I --> J[Load chassis visualization]
+    I --> K[Frontend: GET /api/diagnose?serialNumber=SN]
+
+    K --> L["SSH root@&lt;ILOM IP&gt;\npassword: changeme"]
+    L --> M{SSH auth\nsucceeded?}
+    M -- No --> N([⚠️ Show SSH error])
+    M -- Yes --> O["Run: show /System/Open_Problems"]
+
+    O --> P[Parse ILOM output\nfor component faults]
+    P --> Q{Faults found?}
+
+    Q -- No --> R([✅ No open problems detected])
+    Q -- Yes --> S["Highlight faulted components\nPSU · GPU · BMC · ROT · IOB · GBB"]
+    S --> T([🔴 Show: Faults detected — list])
+
+    style A fill:#1e3a5f,stroke:#7eb8f7,color:#fff
+    style H fill:#5c1a1a,stroke:#e05050,color:#fff
+    style N fill:#5c1a1a,stroke:#e05050,color:#fff
+    style R fill:#1a4a2e,stroke:#4caf75,color:#fff
+    style T fill:#5c1a1a,stroke:#e05050,color:#fff
+    style F fill:#1e2a1e,stroke:#4caf75,color:#ccc
+    style L fill:#1e2a1e,stroke:#4caf75,color:#ccc
+    style O fill:#1e2a1e,stroke:#4caf75,color:#ccc
+  </div>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: 'dark', flowchart: { curve: 'basis' } });
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import styles from './ServerComponent.module.css';
 
-function ServerComponent({ id, name, color = 'default', interactive = false, onClick, style }) {
+function ServerComponent({ id, name, color = 'default', interactive = false, onClick, style, badge = false }) {
   const colorClass = styles[color] || styles.default;
   const interactiveClass = interactive ? styles.interactive : '';
 
@@ -28,6 +28,7 @@ function ServerComponent({ id, name, color = 'default', interactive = false, onC
       tabIndex={interactive ? 0 : undefined}
       aria-label={name}
     >
+      {badge && <div className={styles.badge}>!</div>}
       <div className={styles.handle}>
         <div className={styles.handleGrip} />
       </div>

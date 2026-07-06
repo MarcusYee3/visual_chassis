@@ -10,7 +10,7 @@ import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [] };
 
 const backLinkStyle = {
   cursor: 'pointer',
@@ -134,8 +134,9 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               ← GBB Tray
             </div>
             <div style={{ display: 'flex', gap: '4px' }}>
-              {osfpModules.map((mod) =>
-                expandedOsfp[mod.id] ? (
+              {osfpModules.map((mod) => {
+                const modHasFault = (faults.pcieFaults || []).some(f => f.iou === mod.iouNum);
+                return expandedOsfp[mod.id] ? (
                   <div key={mod.id} style={{ flex: 1 }}>
                     <div style={{ ...backLinkStyle, fontSize: '12px', marginBottom: '4px' }}
                       onClick={() => handleOsfpClick(mod.id)} role="button" tabIndex={0}
@@ -143,21 +144,29 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                       ← {mod.name}
                     </div>
                     <div style={{ display: 'flex', gap: '3px' }}>
-                      {(pciePorts[mod.id] || []).map((port) => (
-                        <PCIePort key={port.id} id={port.id} name={port.name} status={port.status} />
-                      ))}
+                      {(pciePorts[mod.id] || []).map((port) => {
+                        const pcieNum = parseInt(port.id.replace('pcie-', ''), 10);
+                        const fault = (faults.pcieFaults || []).find(f => f.pcie === pcieNum);
+                        return (
+                          <PCIePort key={port.id} id={port.id} name={port.name} status={port.status}
+                            faulted={!!fault} probability={fault?.probability ?? null} />
+                        );
+                      })}
                     </div>
                   </div>
                 ) : (
-                  <OSFPModule key={mod.id} id={mod.id} name={mod.name} onClick={() => handleOsfpClick(mod.id)} />
-                )
-              )}
+                  <OSFPModule key={mod.id} id={mod.id} name={mod.name}
+                    onClick={() => handleOsfpClick(mod.id)}
+                    hasFault={modHasFault} />
+                );
+              })}
             </div>
           </div>
         ) : (
           <ServerComponent id="gbb-tray" name="GBB Tray"
             color={has('gbb') ? 'alert' : 'blue'}
-            interactive onClick={handleGbbClick} />
+            interactive onClick={handleGbbClick}
+            badge={(faults.pcieFaults || []).length > 0} />
         )}
 
         {/* GPU Baseboard */}

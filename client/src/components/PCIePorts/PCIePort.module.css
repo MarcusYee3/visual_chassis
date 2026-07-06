@@ -54,12 +54,41 @@
   white-space: nowrap;
 }
 
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .active {
   border-color: rgba(167, 139, 250, 0.2);
 }
 
 .inactive {
   opacity: 0.5;
+}
+
+.faulted {
+  border-color: #ff4444;
+  box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15);
+  animation: faultPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes faultPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15); }
+  50%       { box-shadow: 0 0 18px rgba(255, 68, 68, 0.7), 0 0 36px rgba(255, 68, 68, 0.3); }
+}
+
+.faulted .label {
+  color: #ff9999;
+}
+
+.probability {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ff6666;
 }
 
 .port:hover {

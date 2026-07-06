@@ -12,6 +12,7 @@ let serverData = {
         {
           id: "osfp-1",
           name: "OSFP 1",
+          iouNum: 1,
           pciePorts: [
             { id: "pcie-1", name: "PCIe 1", status: "active" },
             { id: "pcie-3", name: "PCIe 3", status: "active" },
@@ -22,6 +23,7 @@ let serverData = {
         {
           id: "osfp-2",
           name: "OSFP 2",
+          iouNum: 2,
           pciePorts: [
             { id: "pcie-11", name: "PCIe 11", status: "active" },
             { id: "pcie-13", name: "PCIe 13", status: "active" },

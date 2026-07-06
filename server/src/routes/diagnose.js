@@ -30,6 +30,7 @@ function parseIlomProblems(output) {
     psuPorts: [],
     retimerIds: [],
     e1sIds: [],
+    pcieFaults: [], // [{ resource, iou, pcie, probability }]
   };
 
   const compSet = new Set();
@@ -62,7 +63,24 @@ function parseIlomProblems(output) {
   if (/\/SYS\/[^/]*E1S[_\-.]?A\b|E1S[_\-.]?A/i.test(output)) { add(faults.e1sIds, e1sSeen, 'e1s-a'); addComp('iob'); }
   if (/\/SYS\/[^/]*E1S[_\-.]?B\b|E1S[_\-.]?B/i.test(output)) { add(faults.e1sIds, e1sSeen, 'e1s-b'); addComp('iob'); }
   if (/\/SYS\/IOB\b|IOB[\s_]?TRAY/i.test(output)) addComp('iob');
-  if (/\/SYS\/GBB|\/SYS\/OSFP|\/SYS\/(?:\w+\/)*PCIE|class\s*=\s*PCIE\b/i.test(output)) addComp('gbb');
+  if (/\/SYS\/GBB|\/SYS\/OSFP|class\s*=\s*PCIE\b/i.test(output)) addComp('gbb');
+
+  // PCIe faults — parse each fault block's Probability + Resource
+  const faultBlockRe = /\(Probability:(\d+),\s*UUID:[^,]+,\s*Resource:([^\s,)]+)/g;
+  while ((m = faultBlockRe.exec(output)) !== null) {
+    const probability = parseInt(m[1], 10);
+    const resource = m[2];
+    const pciePathMatch = resource.match(/\/SYS\/IOU(\d+)\/PCIE(\d+)/i);
+    if (pciePathMatch) {
+      faults.pcieFaults.push({
+        resource,
+        iou: parseInt(pciePathMatch[1], 10),
+        pcie: parseInt(pciePathMatch[2], 10),
+        probability,
+      });
+      addComp('gbb');
+    }
+  }
 
   return { faults, raw: output };
 }
