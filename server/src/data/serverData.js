@@ -14,10 +14,10 @@ let serverData = {
           name: "OSFP 1",
           iouNum: 1,
           pciePorts: [
-            { id: "pcie-1", name: "PCIe 1", status: "active" },
-            { id: "pcie-3", name: "PCIe 3", status: "active" },
-            { id: "pcie-6", name: "PCIe 6", status: "active" },
-            { id: "pcie-8", name: "PCIe 8", status: "active" }
+            { id: "pcie-1", name: "IOU 6", status: "active" },
+            { id: "pcie-3", name: "IOU 1", status: "active" },
+            { id: "pcie-6", name: "IOU 7", status: "active" },
+            { id: "pcie-8", name: "IOU 2", status: "active" }
           ]
         },
         {
@@ -25,10 +25,10 @@ let serverData = {
           name: "OSFP 2",
           iouNum: 2,
           pciePorts: [
-            { id: "pcie-11", name: "PCIe 11", status: "active" },
-            { id: "pcie-13", name: "PCIe 13", status: "active" },
-            { id: "pcie-16", name: "PCIe 16", status: "active" },
-            { id: "pcie-18", name: "PCIe 18", status: "active" }
+            { id: "pcie-11", name: "IOU 9", status: "active" },
+            { id: "pcie-13", name: "IOU 4", status: "active" },
+            { id: "pcie-16", name: "IOU 10", status: "active" },
+            { id: "pcie-18", name: "IOU 5", status: "active" }
           ]
         }
       ]

@@ -12,25 +12,35 @@ import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [] };
 
-const backLinkStyle = {
-  cursor: 'pointer',
-  padding: '5px 10px',
-  marginBottom: '8px',
-  fontFamily: "'JetBrains Mono', monospace",
-  fontSize: '10px',
-  fontWeight: 700,
-  letterSpacing: '0.08em',
-  textTransform: 'uppercase',
-  color: '#a8c4d8',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '6px',
-  background: 'linear-gradient(180deg, #243040 0%, #18222e 100%)',
-  border: '1px solid #3a5060',
-  borderRadius: '3px',
-  transition: 'all 0.15s',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
-  userSelect: 'none',
+const BACK_LINK_COLORS = {
+  blue: { background: 'linear-gradient(180deg, #243d64 0%, #182a48 100%)', border: '#3a5a8f', color: '#a8c4e8' },
+  purple: { background: 'linear-gradient(180deg, #392060 0%, #251746 100%)', border: '#5a3a8f', color: '#c9ace8' },
+  green: { background: 'linear-gradient(180deg, #1e4a38 0%, #143528 100%)', border: '#3a7a5a', color: '#a8dcc0' },
+  red: { background: 'linear-gradient(180deg, #542424 0%, #3c1818 100%)', border: '#8a3a3a', color: '#e8b0b0' },
+};
+
+const backLinkStyle = (colorKey = 'blue') => {
+  const c = BACK_LINK_COLORS[colorKey] || BACK_LINK_COLORS.blue;
+  return {
+    cursor: 'pointer',
+    padding: '5px 10px',
+    marginBottom: '8px',
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: '10px',
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    color: c.color,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    background: c.background,
+    border: `1px solid ${c.border}`,
+    borderRadius: '3px',
+    transition: 'all 0.15s',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
+    userSelect: 'none',
+  };
 };
 
 const faultBorder = '1px solid #ff4444';
@@ -129,7 +139,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* GBB Tray */}
         {expandedGbb ? (
           <div style={{ width: '100%' }}>
-            <div style={backLinkStyle} onClick={handleGbbClick} role="button" tabIndex={0}
+            <div style={backLinkStyle('blue')} onClick={handleGbbClick} role="button" tabIndex={0}
               onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleGbbClick()}>
               ← GBB Tray
             </div>
@@ -138,7 +148,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                 const modHasFault = (faults.pcieFaults || []).some(f => f.iou === mod.iouNum);
                 return expandedOsfp[mod.id] ? (
                   <div key={mod.id} style={{ flex: 1 }}>
-                    <div style={{ ...backLinkStyle, fontSize: '12px', marginBottom: '4px' }}
+                    <div style={{ ...backLinkStyle('blue'), fontSize: '12px', marginBottom: '4px' }}
                       onClick={() => handleOsfpClick(mod.id)} role="button" tabIndex={0}
                       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleOsfpClick(mod.id)}>
                       ← {mod.name}
@@ -172,7 +182,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* GPU Baseboard */}
         {expandedGpu ? (
           <div style={{ width: '100%' }}>
-            <div style={backLinkStyle} onClick={handleGpuClick} role="button" tabIndex={0}
+            <div style={backLinkStyle('purple')} onClick={handleGpuClick} role="button" tabIndex={0}
               onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleGpuClick()}>
               ← Nvidia B300 GPU Baseboard — Fan Modules
             </div>
@@ -196,7 +206,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* IOB Tray */}
         {expandedIob ? (
           <div style={{ width: '100%' }}>
-            <div style={backLinkStyle} onClick={handleIobClick} role="button" tabIndex={0}
+            <div style={backLinkStyle('green')} onClick={handleIobClick} role="button" tabIndex={0}
               onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleIobClick()}>
               ← IOB Tray
             </div>
@@ -262,7 +272,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* PSU */}
         {expandedPsu ? (
           <div style={{ width: '100%' }}>
-            <div style={backLinkStyle} onClick={handlePsuClick} role="button" tabIndex={0}
+            <div style={backLinkStyle('red')} onClick={handlePsuClick} role="button" tabIndex={0}
               onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handlePsuClick()}>
               ← PSU
             </div>
