@@ -207,7 +207,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                 <E1SBoard id="e1s-a" name="8x E1S A" faulted={faults.e1sIds.includes('e1s-a')} />
                 <div id="bmc-card" style={{
                   flex: 1,
-                  background: 'linear-gradient(180deg, #1e1a30 0%, #161228 100%)',
+                  backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(192,132,252,0.07) 0.5px, transparent 0.5px), linear-gradient(180deg, #1e1a30 0%, #161228 100%)',
+                  backgroundSize: '6px 6px, 100% 100%',
                   border: bmcFaulted ? faultBorder : '1px solid #3a2a50',
                   boxShadow: bmcFaulted ? faultGlow : 'none',
                   borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '8px', padding: '0 8px', minHeight: '40px',
@@ -217,7 +218,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                   <span style={{ ...fontStyle, color: bmcFaulted ? '#ff9999' : '#7a5aaa' }}>BMC Card</span>
                 </div>
                 <div id="rot-card" style={{
-                  background: 'linear-gradient(180deg, #1a1e28 0%, #111620 100%)',
+                  backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(251,191,36,0.06) 0.5px, transparent 0.5px), linear-gradient(180deg, #1a1e28 0%, #111620 100%)',
+                  backgroundSize: '6px 6px, 100% 100%',
                   border: rotFaulted ? faultBorder : '1px solid #2a3040',
                   boxShadow: rotFaulted ? faultGlow : 'none',
                   borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px',
@@ -229,7 +231,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               </div>
 
               {/* Center: Retimer BD */}
-              <div style={{ background: 'linear-gradient(180deg, #22280f 0%, #161a08 100%)', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
+              <div style={{ backgroundImage: 'radial-gradient(circle at 3.5px 3.5px, rgba(200,220,50,0.08) 0.6px, transparent 0.6px), repeating-linear-gradient(90deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 7px), linear-gradient(180deg, #22280f 0%, #161a08 100%)', backgroundSize: '7px 7px, 7px 7px, 100% 100%', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px', width: '100%' }}>
                   {Array.from({ length: 8 }, (_, i) => (
                     <GXR3VRetimer key={i} id={`retimer-${i}`} name={`Retimer ${i}`}

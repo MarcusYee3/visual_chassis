@@ -34,6 +34,7 @@ function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
+      <h1>Hyve ODM LionKing B300 <span>JBOG Overview</span></h1>
       <ServerForm onSubmit={handleFormSubmit} />
       {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
       {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}

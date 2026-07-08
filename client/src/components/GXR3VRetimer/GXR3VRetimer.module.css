@@ -6,7 +6,10 @@
 }
 
 .body {
-  background: linear-gradient(180deg, #242414 0%, #1a1a0e 100%);
+  background-image:
+    radial-gradient(circle at 3px 3px, rgba(255, 255, 200, 0.06) 0.5px, transparent 0.5px),
+    linear-gradient(180deg, #242414 0%, #1a1a0e 100%);
+  background-size: 6px 6px, 100% 100%;
   border: 1px solid #3a3a22;
   border-top: none;
   border-bottom: none;
@@ -59,7 +62,10 @@
 }
 
 .interactive:hover .body {
-  background: linear-gradient(180deg, #343420 0%, #28281a 100%);
+  background-image:
+    radial-gradient(circle at 3px 3px, rgba(255, 255, 200, 0.09) 0.5px, transparent 0.5px),
+    linear-gradient(180deg, #343420 0%, #28281a 100%);
+  background-size: 6px 6px, 100% 100%;
   border-color: #5a5a32;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 180, 0.08),
