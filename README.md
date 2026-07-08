@@ -45,7 +45,7 @@ npm run dev
 ```
 
 This will start:
-- Express server on http://localhost:5000
+- Express server on http://localhost:5001
 - Vite dev server on http://localhost:3000
 
 Open http://localhost:3000 in your browser to view the application.
@@ -147,12 +147,14 @@ This application was migrated from a vanilla HTML/CSS/JavaScript implementation 
 ## Troubleshooting
 
 ### Port already in use
-If port 3000 or 5000 is already in use, you can change them:
+If port 3000 or 5001 is already in use, you can change them:
 - Client: Edit `client/vite.config.js` → `server.port`
-- Server: Edit `server/.env` → `PORT`
+- Server: Edit `server/.env` → `PORT` (and update `client/vite.config.js`'s proxy target, or set `VITE_API_HOST`, to match)
+
+Avoid port 5000 on macOS — it's claimed by AirPlay Receiver (AirTunes), which answers HTTP requests with an empty 403 response instead of a connection error, making failures look like a broken JSON parser on the client rather than a port conflict.
 
 ### Dependencies not found
 Run `npm install` from the root directory to ensure all dependencies are installed.
 
 ### API calls failing
-Make sure the server is running on port 5000 before starting the client.
+Make sure the server is running (`npm run dev:server`, or `npm run dev` for both) before starting the client, and that its port matches `client/vite.config.js`'s proxy target.

@@ -11,7 +11,9 @@ import validateSnRouter from './routes/validateSn.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+// 5000 collides with macOS AirPlay Receiver (AirTunes), which answers with an
+// empty 403 on that port and breaks JSON parsing on the client — default elsewhere.
+const PORT = process.env.PORT || 5001;
 
 app.use(cors());
 app.use(express.json());

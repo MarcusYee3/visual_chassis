@@ -1,9 +1,23 @@
 const API_BASE = '/api';
 
+// Reads the body as JSON when possible, without letting a non-JSON body (e.g. an
+// HTML error page from an unreachable backend or a proxy) throw a raw parse error.
+async function handleResponse(response, fallbackError) {
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    // non-JSON body — fall through to the status-based error below
+  }
+  if (!response.ok) {
+    throw new Error(data?.error || `${fallbackError} (HTTP ${response.status})`);
+  }
+  return data;
+}
+
 export const getServer = async (serverId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}`);
-  if (!response.ok) throw new Error('Failed to fetch server');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch server');
 };
 
 export const updateServer = async (serverId, updates) => {
@@ -12,53 +26,44 @@ export const updateServer = async (serverId, updates) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   });
-  if (!response.ok) throw new Error('Failed to update server');
-  return response.json();
+  return handleResponse(response, 'Failed to update server');
 };
 
 export const getGBBTray = async (serverId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb`);
-  if (!response.ok) throw new Error('Failed to fetch GBB tray');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch GBB tray');
 };
 
 export const getOSFPModules = async (serverId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp`);
-  if (!response.ok) throw new Error('Failed to fetch OSFP modules');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch OSFP modules');
 };
 
 export const getOSFPModule = async (serverId, osfpId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}`);
-  if (!response.ok) throw new Error('Failed to fetch OSFP module');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch OSFP module');
 };
 
 export const getPCIePorts = async (serverId, osfpId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}/pcie`);
-  if (!response.ok) throw new Error('Failed to fetch PCIe ports');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch PCIe ports');
 };
 
 export const getPSUPorts = async (serverId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/psu`);
-  if (!response.ok) throw new Error('Failed to fetch PSU ports');
-  return response.json();
+  return handleResponse(response, 'Failed to fetch PSU ports');
 };
 
 export const validateSerialNumber = async (sn) => {
   const response = await fetch(`${API_BASE}/validate-sn?sn=${encodeURIComponent(sn)}`);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Validation request failed');
-  return data;
+  return handleResponse(response, 'Validation request failed');
 };
 
 export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
   const params = new URLSearchParams({ serialNumber });
   if (ilomIp) params.set('ilomIp', ilomIp);
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
-  if (!response.ok) throw new Error('Diagnose failed');
-  return response.json();
+  return handleResponse(response, 'Diagnose failed');
 };
 
 export const updatePCIePort = async (serverId, osfpId, pcieId, status) => {
@@ -67,6 +72,5 @@ export const updatePCIePort = async (serverId, osfpId, pcieId, status) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
-  if (!response.ok) throw new Error('Failed to update PCIe port');
-  return response.json();
+  return handleResponse(response, 'Failed to update PCIe port');
 };
