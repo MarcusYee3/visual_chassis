@@ -99,12 +99,26 @@ router.get('/', async (req, res) => {
     // Step 2: SSH to ILOM using native ssh + sshpass
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
-    const sshCmd = `${SSHPASS} -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp} 'show /System/Open_Problems'`;
+    const sshBase = `${SSHPASS} -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp}`;
 
-    const ilomOut = await localExec(sshCmd, 20000, { SSHPASS: ilomPassword });
+    const ilomOut = await localExec(`${sshBase} 'show /System/Open_Problems'`, 20000, { SSHPASS: ilomPassword });
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
-    const parsed = parseIlomProblems(ilomOut);
+    let parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
+
+    // Step 3: fall back to the fault management shell when open problems reports nothing
+    if (parsed.faults.components.length === 0) {
+      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a');
+      const fmadmOut = await localExec(
+        `${sshBase} 'start -script /SP/faultmgmt/shell\nfmadm faulty -a'`,
+        20000,
+        { SSHPASS: ilomPassword }
+      );
+      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
+      const fmadmParsed = parseIlomProblems(fmadmOut);
+      console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+      parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${fmadmOut}` };
+    }
 
     res.json(parsed);
   } catch (err) {
