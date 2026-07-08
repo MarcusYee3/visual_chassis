@@ -175,7 +175,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           </div>
         ) : (
           <ServerComponent id="gbb-tray" name="GBB Tray"
-            color={has('gbb') ? 'alert' : 'blue'}
+            color="blue"
+            alert={has('gbb')}
             interactive onClick={handleGbbClick}
             badge={(faults.pcieFaults || []).length > 0} />
         )}
@@ -199,7 +200,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           </div>
         ) : (
           <ServerComponent id="gpu-baseboard" name="Nvidia B300 GPU Baseboard"
-            color={has('gpu') ? 'alert' : 'purple'}
+            color="purple"
+            alert={has('gpu')}
             interactive onClick={handleGpuClick}
             badge={(faults.fanIds || []).length > 0}
             style={{ height: '140px' }} />
@@ -266,7 +268,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           </div>
         ) : (
           <ServerComponent id="iob-tray" name="IOB Tray"
-            color={has('iob') ? 'alert' : 'green'}
+            color="green"
+            alert={has('iob')}
             interactive onClick={handleIobClick}
             style={{ height: '120px' }} />
         )}
@@ -295,7 +298,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           </div>
         ) : (
           <ServerComponent id="psu" name="PSU"
-            color={has('psu') ? 'alert' : 'red'}
+            color="red"
+            alert={has('psu')}
             interactive onClick={handlePsuClick} />
         )}
 

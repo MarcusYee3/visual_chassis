@@ -1,8 +1,9 @@
 import styles from './ServerComponent.module.css';
 
-function ServerComponent({ id, name, color = 'default', interactive = false, onClick, style, badge = false }) {
+function ServerComponent({ id, name, color = 'default', interactive = false, onClick, style, badge = false, alert = false }) {
   const colorClass = styles[color] || styles.default;
   const interactiveClass = interactive ? styles.interactive : '';
+  const alertClass = alert ? styles.alert : '';
 
   const handleClick = () => {
     if (interactive && onClick) {
@@ -20,7 +21,7 @@ function ServerComponent({ id, name, color = 'default', interactive = false, onC
   return (
     <div
       id={id}
-      className={`${styles.component} ${colorClass} ${interactiveClass}`}
+      className={`${styles.component} ${colorClass} ${alertClass} ${interactiveClass}`}
       style={style}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
