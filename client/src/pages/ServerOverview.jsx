@@ -10,7 +10,7 @@ import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [] };
 
 const BACK_LINK_COLORS = {
   blue: { background: 'linear-gradient(180deg, #243d64 0%, #182a48 100%)', border: '#3a5a8f', color: '#a8c4e8' },
@@ -191,7 +191,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               {[25, 19, 13, 7, 1].map((rowStart) => (
                 <div key={rowStart} style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
                   {Array.from({ length: 6 }, (_, i) => rowStart + i).map((n) => (
-                    <FanModule key={n} number={n} />
+                    <FanModule key={n} number={n} faulted={(faults.fanIds || []).includes(n)} />
                   ))}
                 </div>
               ))}
@@ -201,6 +201,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           <ServerComponent id="gpu-baseboard" name="Nvidia B300 GPU Baseboard"
             color={has('gpu') ? 'alert' : 'purple'}
             interactive onClick={handleGpuClick}
+            badge={(faults.fanIds || []).length > 0}
             style={{ height: '140px' }} />
         )}
 

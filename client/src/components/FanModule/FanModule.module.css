@@ -17,14 +17,26 @@
 }
 
 .faulted {
-  border-color: #ff4444;
-  box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15);
-  animation: faultPulse 1.4s ease-in-out infinite;
+  border: 1px solid rgba(255, 68, 68, 0.5);
 }
 
-@keyframes faultPulse {
-  0%, 100% { box-shadow: 0 0 10px rgba(255, 68, 68, 0.4), 0 0 20px rgba(255, 68, 68, 0.15); }
-  50%       { box-shadow: 0 0 18px rgba(255, 68, 68, 0.7), 0 0 36px rgba(255, 68, 68, 0.3); }
+.badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ff4444;
+  color: #fff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  box-shadow: 0 0 6px rgba(255, 68, 68, 0.6);
 }
 
 .spinner {
@@ -32,10 +44,6 @@
   width: 28px;
   height: 28px;
   animation: spin 2s linear infinite;
-}
-
-.fan.faulted .spinner {
-  animation: spin 2s linear infinite, faultColor 1.4s ease-in-out infinite;
 }
 
 @keyframes spin {

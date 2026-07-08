@@ -21,6 +21,7 @@ function parseIlomProblems(output) {
     retimerIds: [],
     e1sIds: [],
     pcieFaults: [], // [{ resource, iou, pcie, probability }]
+    fanIds: [],
   };
 
   const compSet = new Set();
@@ -90,6 +91,37 @@ function parseIlomProblems(output) {
   return { faults, raw: output };
 }
 
+// hwdiag fan info prints one line per fan ("FM<n>") and PSU ("PS<n>"), e.g.:
+//   FM1    -  Present
+//   FM21   - Not Readable
+//   PS1    -  Present
+// Anything whose status isn't "Present" is treated as a fault.
+function parseHwdiagFanInfo(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const fanSeen = new Set();
+  const psuSeen = new Set();
+
+  const re = /^\s*(FM|PS)(\d+)\s*-\s*(.+?)\s*$/gim;
+  let m;
+  while ((m = re.exec(output)) !== null) {
+    const [, kind, numStr, status] = m;
+    if (/present/i.test(status)) continue;
+    const n = parseInt(numStr, 10);
+    if (kind === 'FM') {
+      if (!fanSeen.has(n)) { fanSeen.add(n); faults.fanIds.push(n); }
+      addComp('gpu');
+    } else {
+      const id = `psu-port-${n}`;
+      if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
+      addComp('psu');
+    }
+  }
+
+  return { faults, raw: output };
+}
+
 router.get('/', async (req, res) => {
   const { serialNumber, ilomIp: ilomIpParam } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
@@ -121,21 +153,32 @@ router.get('/', async (req, res) => {
     let parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
 
-    // Step 3: fall back to the fault management shell when open problems reports nothing.
-    // The two commands must be sent as piped stdin to a plain (no remote-command-argument)
-    // ssh session — passing them as a single quoted multi-line ssh argument does not work,
-    // ILOM's CLI does not treat the embedded newline as a line break in that mode.
+    // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan
+    // scan, when open problems reports nothing. All commands are sent as piped stdin to a
+    // single plain (no remote-command-argument) ssh session — passing them as a quoted
+    // multi-line ssh argument does not work, ILOM's CLI doesn't treat the embedded newline
+    // as a line break in that mode. "exit" is required to leave the fault mgmt shell before
+    // the diag shell can be entered in the same session.
     if (parsed.faults.components.length === 0) {
-      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a');
-      const fmadmOut = await localExec(
-        `printf 'start -script /SP/faultmgmt/shell\\nfmadm faulty -a\\n' | ${sshBase}`,
+      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info');
+      const deepOut = await localExec(
+        `printf 'start -script /SP/faultmgmt/shell\\nfmadm faulty -a\\nexit\\nstart -script /SP/diag/shell\\nhwdiag fan info\\n' | ${sshBase}`,
         20000,
         { SSHPASS: ilomPassword }
       );
-      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
-      const fmadmParsed = parseIlomProblems(fmadmOut);
+      console.log('[diagnose] deep diagnostic raw output:\n', deepOut);
+
+      const fmadmParsed = parseIlomProblems(deepOut);
       console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
-      parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${fmadmOut}` };
+
+      if (fmadmParsed.faults.components.length > 0) {
+        parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+      } else {
+        console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
+        const fanParsed = parseHwdiagFanInfo(deepOut);
+        console.log('[diagnose] hwdiag parsed faults:', JSON.stringify(fanParsed.faults));
+        parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+      }
     }
 
     res.json(parsed);

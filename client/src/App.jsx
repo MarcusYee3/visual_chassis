@@ -3,7 +3,7 @@ import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import { updateServer, diagnoseServer } from './services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
