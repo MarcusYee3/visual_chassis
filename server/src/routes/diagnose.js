@@ -155,14 +155,16 @@ router.get('/', async (req, res) => {
 
     // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan
     // scan, when open problems reports nothing. All commands are sent as piped stdin to a
-    // single plain (no remote-command-argument) ssh session — passing them as a quoted
-    // multi-line ssh argument does not work, ILOM's CLI doesn't treat the embedded newline
-    // as a line break in that mode. "exit" is required to leave the fault mgmt shell before
-    // the diag shell can be entered in the same session.
+    // single plain (no remote-command-argument) ssh session via a heredoc — passing them as
+    // a quoted multi-line ssh argument does not work (ILOM's CLI doesn't treat an embedded
+    // newline as a line break there), and a printf-with-\n-escapes pipe was observed to
+    // garble/duplicate lines on real hardware. A quoted heredoc needs no escape interpretation
+    // at all, avoiding both failure modes. "exit" is required to leave the fault mgmt shell
+    // before the diag shell can be entered in the same session.
     if (parsed.faults.components.length === 0) {
       console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info');
       const deepOut = await localExec(
-        `printf 'start -script /SP/faultmgmt/shell\\nfmadm faulty -a\\nexit\\nstart -script /SP/diag/shell\\nhwdiag fan info\\n' | ${sshBase}`,
+        `${sshBase} <<'EOF'\nstart -script /SP/faultmgmt/shell\nfmadm faulty -a\nexit\nstart -script /SP/diag/shell\nhwdiag fan info\nEOF`,
         20000,
         { SSHPASS: ilomPassword }
       );
