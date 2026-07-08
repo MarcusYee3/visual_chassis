@@ -1,5 +1,5 @@
 import express from 'express';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 
 const router = express.Router({ mergeParams: true });
 
@@ -11,6 +11,50 @@ function localExec(command, timeoutMs = 15000, extraEnv = {}) {
       if (error?.killed) return reject(new Error(`Command timed out: ${command}`));
       resolve(stdout + stderr);
     });
+  });
+}
+
+// Delivering multiple chained commands to the ILOM CLI in one instant burst (via a heredoc
+// or a printf pipe) was observed on real hardware to drop/duplicate lines — the CLI's
+// prompt-state machine (entering/exiting sub-shells, or still mid-output from a long-running
+// command like `fmadm faulty -a`) isn't necessarily ready for the next line the instant it's
+// written to the pipe buffer. This opens a live, interactive-style session and writes each
+// command to its stdin with a pause afterward, giving the remote CLI time to settle.
+function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(SSHPASS, [
+      '-e', 'ssh',
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'ConnectTimeout=10',
+      '-o', 'PreferredAuthentications=keyboard-interactive',
+      `${ilomUser}@${ilomIp}`,
+    ], { env: { ...process.env, SSHPASS: ilomPassword } });
+
+    let output = '';
+    child.stdout.on('data', (d) => { output += d.toString(); });
+    child.stderr.on('data', (d) => { output += d.toString(); });
+
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`ILOM session timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      resolve(output);
+    });
+
+    (async () => {
+      for (const { line, delayAfterMs } of commands) {
+        child.stdin.write(`${line}\n`);
+        await new Promise((r) => setTimeout(r, delayAfterMs));
+      }
+      child.stdin.end();
+    })();
   });
 }
 
@@ -154,20 +198,19 @@ router.get('/', async (req, res) => {
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
 
     // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan
-    // scan, when open problems reports nothing. All commands are sent as piped stdin to a
-    // single plain (no remote-command-argument) ssh session via a heredoc — passing them as
-    // a quoted multi-line ssh argument does not work (ILOM's CLI doesn't treat an embedded
-    // newline as a line break there), and a printf-with-\n-escapes pipe was observed to
-    // garble/duplicate lines on real hardware. A quoted heredoc needs no escape interpretation
-    // at all, avoiding both failure modes. "exit" is required to leave the fault mgmt shell
-    // before the diag shell can be entered in the same session.
+    // scan, when open problems reports nothing. "exit" is required to leave the fault mgmt
+    // shell before the diag shell can be entered in the same session. Commands are written
+    // one at a time to a live session with a pause after each — delivering them all at once
+    // (heredoc or printf pipe) was observed on real hardware to drop/duplicate lines.
     if (parsed.faults.components.length === 0) {
       console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info');
-      const deepOut = await localExec(
-        `${sshBase} <<'EOF'\nstart -script /SP/faultmgmt/shell\nfmadm faulty -a\nexit\nstart -script /SP/diag/shell\nhwdiag fan info\nEOF`,
-        20000,
-        { SSHPASS: ilomPassword }
-      );
+      const deepOut = await runIlomSession([
+        { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
+        { line: 'fmadm faulty -a', delayAfterMs: 5000 },
+        { line: 'exit', delayAfterMs: 2000 },
+        { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+        { line: 'hwdiag fan info', delayAfterMs: 5000 },
+      ], ilomIp, ilomUser, ilomPassword, 45000);
       console.log('[diagnose] deep diagnostic raw output:\n', deepOut);
 
       const fmadmParsed = parseIlomProblems(deepOut);
