@@ -11,8 +11,7 @@ let serverData = {
       osfpModules: [
         {
           id: "osfp-1",
-          name: "OSFP 1",
-          iouNum: 1,
+          name: "OSFP BD 1",
           pciePorts: [
             { id: "pcie-1", name: "IOU 6", status: "active" },
             { id: "pcie-3", name: "IOU 1", status: "active" },
@@ -22,8 +21,7 @@ let serverData = {
         },
         {
           id: "osfp-2",
-          name: "OSFP 2",
-          iouNum: 2,
+          name: "OSFP BD 2",
           pciePorts: [
             { id: "pcie-11", name: "IOU 9", status: "active" },
             { id: "pcie-13", name: "IOU 4", status: "active" },

@@ -10,6 +10,7 @@ function PCIePort({ id, name, status = 'active', faulted = false, probability = 
       data-status={faulted ? 'faulted' : status}
       aria-label={`${name} - ${faulted ? 'faulted' : status}`}
     >
+      {faulted && <div className={styles.badge}>!</div>}
       <div className={styles.connector} />
       <div className={styles.info}>
         <span className={styles.label}>{name}</span>

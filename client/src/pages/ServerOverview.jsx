@@ -145,7 +145,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             </div>
             <div style={{ display: 'flex', gap: '4px' }}>
               {osfpModules.map((mod) => {
-                const modHasFault = (faults.pcieFaults || []).some(f => f.iou === mod.iouNum);
+                const modIouNums = (mod.pciePorts || []).map((p) => parseInt(p.name.replace(/\D/g, ''), 10));
+                const modHasFault = (faults.pcieFaults || []).some(f => modIouNums.includes(f.iou));
                 return expandedOsfp[mod.id] ? (
                   <div key={mod.id} style={{ flex: 1 }}>
                     <div style={{ ...backLinkStyle('blue'), fontSize: '12px', marginBottom: '4px' }}
@@ -155,8 +156,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                     </div>
                     <div style={{ display: 'flex', gap: '3px' }}>
                       {(pciePorts[mod.id] || []).map((port) => {
-                        const pcieNum = parseInt(port.id.replace('pcie-', ''), 10);
-                        const fault = (faults.pcieFaults || []).find(f => f.pcie === pcieNum);
+                        const portIouNum = parseInt(port.name.replace(/\D/g, ''), 10);
+                        const fault = (faults.pcieFaults || []).find(f => f.iou === portIouNum);
                         return (
                           <PCIePort key={port.id} id={port.id} name={port.name} status={port.status}
                             faulted={!!fault} probability={fault?.probability ?? null} />

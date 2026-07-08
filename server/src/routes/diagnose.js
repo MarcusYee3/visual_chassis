@@ -55,18 +55,22 @@ function parseIlomProblems(output) {
   if (/\/SYS\/IOB\b|IOB[\s_]?TRAY/i.test(output)) addComp('iob');
   if (/\/SYS\/GBB|\/SYS\/OSFP|class\s*=\s*PCIE\b/i.test(output)) addComp('gbb');
 
-  // PCIe faults — parse each fault block's Probability + Resource
-  const faultBlockRe = /\(Probability:(\d+),\s*UUID:[^,]+,\s*Resource:([^\s,)]+)/g;
-  while ((m = faultBlockRe.exec(output)) !== null) {
-    const probability = parseInt(m[1], 10);
-    const resource = m[2];
-    const pciePathMatch = resource.match(/\/SYS\/IOU(\d+)\/PCIE(\d+)/i);
+  // PCIe faults — fmadm faulty -a prints one "Suspect N of M" block per fault,
+  // each with its own Certainty and a Resource section holding the Location path.
+  const iouPcieRe = /\/SYS\/IOU(\d+)\/PCIE(\d+)/i;
+  const suspectBlocks = output.split(/(?=Suspect \d+ of \d+)/i);
+  for (const block of suspectBlocks) {
+    const certaintyMatch = block.match(/Certainty\s*:\s*(\d+)%/i);
+    const resourceMatch = block.match(/Resource\s*\r?\n\s*Location\s*:\s*(\S+)/i);
+    if (!resourceMatch) continue;
+    const resource = resourceMatch[1];
+    const pciePathMatch = resource.match(iouPcieRe);
     if (pciePathMatch) {
       faults.pcieFaults.push({
         resource,
         iou: parseInt(pciePathMatch[1], 10),
         pcie: parseInt(pciePathMatch[2], 10),
-        probability,
+        probability: certaintyMatch ? parseInt(certaintyMatch[1], 10) : null,
       });
       addComp('gbb');
     }
