@@ -8,7 +8,8 @@ const ServerForm = ({ onSubmit }) => {
     const [validating, setValidating] = useState(false);
 
     const handleChange = (e) => {
-        setServerData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+        const { name, value } = e.target;
+        setServerData((prev) => ({ ...prev, [name]: name === "sn" ? value.trim() : value }));
         setError("");
     };
 
