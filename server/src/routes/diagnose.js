@@ -189,15 +189,19 @@ router.get('/', async (req, res) => {
     }
     console.log('[diagnose] ILOM IP:', ilomIp);
 
-    // Step 2: SSH to ILOM using native ssh + sshpass. -tt forces pseudo-terminal allocation —
-    // without it (the default when stdin isn't a real terminal, as here), this ILOM's CLI was
-    // observed to hang indefinitely on commands that work fine over an interactive/manual SSH
-    // session, until Node's exec() timeout force-kills it.
+    // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
+    // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang
+    // indefinitely on some devices even with -tt forcing a pty — this ILOM's restricted CLI
+    // apparently doesn't reliably support that invocation mode. A manual/interactive session
+    // (connect, then type the command) works fine, so run it the same way: open a bare
+    // session and write the command to stdin via runIlomSession, matching tier 2/3.
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
-    const sshBase = `${SSHPASS} -e ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp}`;
 
-    const ilomOut = await localExec(`${sshBase} 'show /System/Open_Problems'`, 30000, { SSHPASS: ilomPassword });
+    const ilomOut = await runIlomSession(
+      [{ line: 'show /System/Open_Problems', delayAfterMs: 5000 }],
+      ilomIp, ilomUser, ilomPassword, 30000
+    );
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
     let parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
