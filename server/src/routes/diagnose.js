@@ -15,15 +15,17 @@ function localExec(command, timeoutMs = 15000, extraEnv = {}) {
 }
 
 // Delivering multiple chained commands to the ILOM CLI in one instant burst (via a heredoc
-// or a printf pipe) was observed on real hardware to drop/duplicate lines — the CLI's
-// prompt-state machine (entering/exiting sub-shells, or still mid-output from a long-running
-// command like `fmadm faulty -a`) isn't necessarily ready for the next line the instant it's
-// written to the pipe buffer. This opens a live, interactive-style session and writes each
-// command to its stdin with a pause afterward, giving the remote CLI time to settle.
+// or a printf pipe) was observed on real hardware to drop/duplicate lines — likely because
+// those earlier attempts ran without a pseudo-terminal (confirmed by the SSH warning
+// "Pseudo-terminal will not be allocated because stdin is not a terminal" in that output),
+// and this ILOM's CLI behaves unreliably without one, unlike an interactive/manual session.
+// -tt forces PTY allocation. Commands are still written one at a time with a pause afterward
+// as defense in depth, giving the remote CLI time to settle between state transitions.
 function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
     const child = spawn(SSHPASS, [
       '-e', 'ssh',
+      '-tt',
       '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=10',
       '-o', 'PreferredAuthentications=keyboard-interactive',
@@ -187,12 +189,15 @@ router.get('/', async (req, res) => {
     }
     console.log('[diagnose] ILOM IP:', ilomIp);
 
-    // Step 2: SSH to ILOM using native ssh + sshpass
+    // Step 2: SSH to ILOM using native ssh + sshpass. -tt forces pseudo-terminal allocation —
+    // without it (the default when stdin isn't a real terminal, as here), this ILOM's CLI was
+    // observed to hang indefinitely on commands that work fine over an interactive/manual SSH
+    // session, until Node's exec() timeout force-kills it.
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
-    const sshBase = `${SSHPASS} -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp}`;
+    const sshBase = `${SSHPASS} -e ssh -tt -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive ${ilomUser}@${ilomIp}`;
 
-    const ilomOut = await localExec(`${sshBase} 'show /System/Open_Problems'`, 20000, { SSHPASS: ilomPassword });
+    const ilomOut = await localExec(`${sshBase} 'show /System/Open_Problems'`, 30000, { SSHPASS: ilomPassword });
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
     let parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
