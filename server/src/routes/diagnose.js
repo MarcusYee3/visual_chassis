@@ -268,35 +268,46 @@ router.get('/', async (req, res) => {
     // at once (heredoc or printf pipe) was observed on real hardware to drop/duplicate lines.
     if (parsed.faults.components.length === 0) {
       console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info / hwdiag temp get all');
-      const deepOut = await runIlomSession([
+
+      // fmadm and hwdiag are run as two separate sessions (rather than one combined session/
+      // buffer) so each output is parsed in isolation. parseIlomProblems's "/SYS/PS<n>" regex
+      // matches any mention of a PSU resource, not just faulted ones — running it against a
+      // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
+      // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
+      // faulted, instead of only the ones genuinely at 0.00 deg C.
+      const fmadmOut = await runIlomSession([
         { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
         { line: 'fmadm faulty -a', delayAfterMs: 5000 },
-        { line: 'exit', delayAfterMs: 2000 },
-        { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
-        { line: 'hwdiag fan info', delayAfterMs: 5000 },
-        { line: 'hwdiag temp get all', delayAfterMs: 5000 },
-        { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
-        { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-      ], ilomIp, ilomUser, ilomPassword, 55000);
-      console.log('[diagnose] deep diagnostic raw output:\n', deepOut);
+        { line: 'exit', delayAfterMs: 1500 },
+      ], ilomIp, ilomUser, ilomPassword, 30000);
+      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
 
-      const fmadmParsed = parseIlomProblems(deepOut);
+      const fmadmParsed = parseIlomProblems(fmadmOut);
       console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
 
       if (fmadmParsed.faults.components.length > 0) {
-        parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+        parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${fmadmOut}` };
       } else {
+        const hwdiagOut = await runIlomSession([
+          { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+          { line: 'hwdiag fan info', delayAfterMs: 5000 },
+          { line: 'hwdiag temp get all', delayAfterMs: 5000 },
+          { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
+          { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
+        ], ilomIp, ilomUser, ilomPassword, 45000);
+        console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
+
         console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
-        const fanParsed = parseHwdiagFanInfo(deepOut);
+        const fanParsed = parseHwdiagFanInfo(hwdiagOut);
         console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
 
         if (fanParsed.faults.components.length > 0) {
-          parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+          parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
         } else {
           console.log('[diagnose] hwdiag fan info found nothing, scanning hwdiag temp get all for 0.00 deg C sensors');
-          const tempParsed = parseHwdiagTempGetAll(deepOut);
+          const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
           console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
-          parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+          parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
         }
       }
     }
