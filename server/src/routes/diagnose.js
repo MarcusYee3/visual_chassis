@@ -38,6 +38,10 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
     let output = '';
     child.stdout.on('data', (d) => { output += d.toString(); });
     child.stderr.on('data', (d) => { output += d.toString(); });
+    // The last command is always "exit", which makes the child process close its own end of
+    // the pipe before our write loop necessarily finishes waiting out its final delay —
+    // without this handler, that write-after-close raises an uncaught EPIPE.
+    child.stdin.on('error', () => {});
 
     const timer = setTimeout(() => {
       child.kill();
@@ -239,12 +243,18 @@ router.get('/', async (req, res) => {
     // indefinitely on some devices even with -tt forcing a pty — this ILOM's restricted CLI
     // apparently doesn't reliably support that invocation mode. A manual/interactive session
     // (connect, then type the command) works fine, so run it the same way: open a bare
-    // session and write the command to stdin via runIlomSession, matching tier 2/3.
+    // session and write the command to stdin via runIlomSession, matching tier 2/3. A
+    // trailing "exit" is required too — closing stdin (EOF) alone does not make this CLI log
+    // out and close the connection, it just sits at the prompt until the timeout kills it,
+    // even when the actual command already succeeded and returned a complete result.
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
 
     const ilomOut = await runIlomSession(
-      [{ line: 'show /System/Open_Problems', delayAfterMs: 5000 }],
+      [
+        { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
+        { line: 'exit', delayAfterMs: 1500 },
+      ],
       ilomIp, ilomUser, ilomPassword, 30000
     );
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
@@ -265,6 +275,8 @@ router.get('/', async (req, res) => {
         { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
         { line: 'hwdiag fan info', delayAfterMs: 5000 },
         { line: 'hwdiag temp get all', delayAfterMs: 5000 },
+        { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
+        { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
       ], ilomIp, ilomUser, ilomPassword, 55000);
       console.log('[diagnose] deep diagnostic raw output:\n', deepOut);
 
