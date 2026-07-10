@@ -3,7 +3,7 @@ import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import { updateServer, diagnoseServer } from './services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -24,7 +24,8 @@ function App() {
       const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
-      setDiagnoseStatus(f.components.length === 0 ? 'No open problems detected.' : `Faults detected: ${f.components.join(', ')}`);
+      const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
+      setDiagnoseStatus(!hasFaults ? 'No open problems detected.' : `Faults detected: ${f.components.length > 0 ? f.components.join(', ') : 'see error below'}`);
     } catch (e) {
       setDiagnoseError(e.message || 'Diagnosis failed');
     } finally {

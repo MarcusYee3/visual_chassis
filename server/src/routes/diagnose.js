@@ -68,6 +68,7 @@ function parseIlomProblems(output) {
     e1sIds: [],
     pcieFaults: [], // [{ resource, iou, pcie, probability }]
     fanIds: [],
+    genericErrors: [],
   };
 
   const compSet = new Set();
@@ -143,7 +144,7 @@ function parseIlomProblems(output) {
 //   PS1    -  Present
 // Anything whose status isn't "Present" is treated as a fault.
 function parseHwdiagFanInfo(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
@@ -162,6 +163,38 @@ function parseHwdiagFanInfo(output) {
       const id = `psu-port-${n}`;
       if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
       addComp('psu');
+    }
+  }
+
+  return { faults, raw: output };
+}
+
+// hwdiag temp get all prints one line per sensor, e.g.:
+//   /SYS/MB/T_IN_ZONE0               : 29.50 deg C
+//   /SYS/PS1/T_OUT                   : 0.00 deg C
+//   /SYS/MB/P0_DTS                   : 56.00 margin
+// Only "deg C" readings are temperatures ("margin" is a different unit, not in scope here).
+// A reading of exactly 0.00 deg C is a dead/unreadable sensor. If it's a PSU
+// (/SYS/PS<n>/...), route it through the existing PSU highlighting; anything else becomes a
+// generic error message with no specific chassis component to highlight.
+function parseHwdiagTempGetAll(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const psuSeen = new Set();
+
+  const re = /^\s*(\S+)\s*:\s*([\d.]+)\s*deg C\s*$/gim;
+  let m;
+  while ((m = re.exec(output)) !== null) {
+    const [, device, valueStr] = m;
+    if (parseFloat(valueStr) !== 0) continue;
+    const psuMatch = device.match(/\/SYS\/PS(\d+)\b/i);
+    if (psuMatch) {
+      const id = `psu-port-${parseInt(psuMatch[1], 10) + 1}`;
+      if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
+      addComp('psu');
+    } else {
+      faults.genericErrors.push(`${device} reporting 0.00°C`);
     }
   }
 
@@ -206,20 +239,21 @@ router.get('/', async (req, res) => {
     let parsed = parseIlomProblems(ilomOut);
     console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
 
-    // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan
-    // scan, when open problems reports nothing. "exit" is required to leave the fault mgmt
-    // shell before the diag shell can be entered in the same session. Commands are written
-    // one at a time to a live session with a pause after each — delivering them all at once
-    // (heredoc or printf pipe) was observed on real hardware to drop/duplicate lines.
+    // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan and
+    // temp scans, when open problems reports nothing. "exit" is required to leave the fault
+    // mgmt shell before the diag shell can be entered in the same session. Commands are
+    // written one at a time to a live session with a pause after each — delivering them all
+    // at once (heredoc or printf pipe) was observed on real hardware to drop/duplicate lines.
     if (parsed.faults.components.length === 0) {
-      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info');
+      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info / hwdiag temp get all');
       const deepOut = await runIlomSession([
         { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
         { line: 'fmadm faulty -a', delayAfterMs: 5000 },
         { line: 'exit', delayAfterMs: 2000 },
         { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
         { line: 'hwdiag fan info', delayAfterMs: 5000 },
-      ], ilomIp, ilomUser, ilomPassword, 45000);
+        { line: 'hwdiag temp get all', delayAfterMs: 5000 },
+      ], ilomIp, ilomUser, ilomPassword, 55000);
       console.log('[diagnose] deep diagnostic raw output:\n', deepOut);
 
       const fmadmParsed = parseIlomProblems(deepOut);
@@ -230,8 +264,16 @@ router.get('/', async (req, res) => {
       } else {
         console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
         const fanParsed = parseHwdiagFanInfo(deepOut);
-        console.log('[diagnose] hwdiag parsed faults:', JSON.stringify(fanParsed.faults));
-        parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+        console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
+
+        if (fanParsed.faults.components.length > 0) {
+          parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+        } else {
+          console.log('[diagnose] hwdiag fan info found nothing, scanning hwdiag temp get all for 0.00 deg C sensors');
+          const tempParsed = parseHwdiagTempGetAll(deepOut);
+          console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
+          parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${deepOut}` };
+        }
       }
     }
 
