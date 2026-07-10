@@ -275,11 +275,15 @@ router.get('/', async (req, res) => {
       // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
       // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
       // faulted, instead of only the ones genuinely at 0.00 deg C.
+      // Splitting into two sessions means paying the connection handshake + login banner wait
+      // twice, and on real hardware "fmadm faulty -a" itself was observed to still be printing
+      // past the 5s delay that was enough when it was one leg of a single 55s-budget session —
+      // give this session its own longer delay and timeout rather than reusing the old budget.
       const fmadmOut = await runIlomSession([
         { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
-        { line: 'fmadm faulty -a', delayAfterMs: 5000 },
+        { line: 'fmadm faulty -a', delayAfterMs: 10000 },
         { line: 'exit', delayAfterMs: 1500 },
-      ], ilomIp, ilomUser, ilomPassword, 30000);
+      ], ilomIp, ilomUser, ilomPassword, 45000);
       console.log('[diagnose] fmadm raw output:\n', fmadmOut);
 
       const fmadmParsed = parseIlomProblems(fmadmOut);
