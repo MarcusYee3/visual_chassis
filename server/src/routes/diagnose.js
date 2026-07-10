@@ -227,6 +227,54 @@ function parseHwdiagTempGetAll(output) {
   return { faults, raw: output };
 }
 
+// mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
+// EVE LionKing GPU_JBOG_TEST run: JBOG_NUM, TailNode_SN, HeadNode_SN, Started, Status. A
+// failing row's Status cell looks like "X11-2C.B300H – HOST_POWER_ON_PRETEST : 5_CHECK_NVME_PRESENCE 00:40"
+// (board – stage : numbered check, duration); a passing row is "X11-2C.B300H – : 00:25" (empty
+// stage); a still-running row can be just a bare duration with no board/stage at all. This is
+// checked before opening any ILOM SSH session, since most of these checks (NVMe presence, OSFP
+// links, CDFP connection, firmware update, partner diagnostics) aren't things the ILOM fault/
+// hwdiag chain below can see — there's nothing to gain from paying the SSH round-trip cost for
+// those. Only CHECK_ILOM_FAULTS and CHECK_PSU_PRESENCE overlap with what the chain below
+// actually inspects, so those still fall through to the normal ILOM session flow.
+const MFG_COLLECTOR_URL = 'https://mfg-collector.hyvesolutions.org/out/out.evelionking_all.php';
+const ILOM_OBSERVABLE_CHECKS = /CHECK_ILOM_FAULTS|CHECK_PSU_PRESENCE/i;
+
+async function fetchMfgCollectorStatus(serialNumber) {
+  const res = await fetch(MFG_COLLECTOR_URL, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`mfg-collector returned HTTP ${res.status}`);
+  const html = await res.text();
+
+  const stripTags = (s) => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+
+  let rowMatch;
+  while ((rowMatch = rowRe.exec(html)) !== null) {
+    const cells = [];
+    let cellMatch;
+    cellRe.lastIndex = 0;
+    while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) cells.push(stripTags(cellMatch[1]));
+    if (cells.length < 5) continue; // header row or a row that isn't shaped like a JBOG entry
+
+    const [, tailSn, headSn, started, status] = cells;
+    if (tailSn.toUpperCase() !== serialNumber.toUpperCase() && headSn.toUpperCase() !== serialNumber.toUpperCase()) continue;
+
+    const failMatch = status.match(/^(.*?)[–-]\s*([A-Z0-9_]*)\s*:\s*(\d+)_([A-Z0-9_]+)\s+([\d:]+)\s*$/);
+    if (failMatch) {
+      const [, board, stage, checkNumber, checkName, duration] = failMatch;
+      return {
+        found: true, failing: true, serialNumber, tailSn, headSn, started,
+        board: board.trim(), stage, checkNumber, checkName, duration,
+        ilomObservable: ILOM_OBSERVABLE_CHECKS.test(checkName),
+        raw: status,
+      };
+    }
+    return { found: true, failing: false, serialNumber, tailSn, headSn, started, raw: status };
+  }
+  return { found: false, serialNumber };
+}
+
 router.get('/', async (req, res) => {
   const { serialNumber, ilomIp: ilomIpParam } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
@@ -236,6 +284,31 @@ router.get('/', async (req, res) => {
   }
 
   try {
+    // Step 0: check mfg-collector's live JBOG_TEST table before opening any ILOM SSH session —
+    // if it already knows this SN is failing a check the ILOM chain below can't see, report
+    // that directly instead of paying for a full SSH round-trip that won't find anything.
+    // Fails open: any lookup problem (network, auth, unexpected page shape) just logs a warning
+    // and falls through to the normal flow below, it never blocks diagnosis.
+    let collectorStatus = null;
+    try {
+      collectorStatus = await fetchMfgCollectorStatus(serialNumber);
+      console.log('[diagnose] mfg-collector status:', JSON.stringify(collectorStatus));
+    } catch (err) {
+      console.warn('[diagnose] mfg-collector lookup failed, proceeding without it:', err.message);
+    }
+
+    if (collectorStatus?.failing && !collectorStatus.ilomObservable) {
+      return res.json({
+        faults: { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [
+          `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
+          `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
+          `not an ILOM-observable fault — skipped ILOM diagnostics`,
+        ] },
+        raw: collectorStatus.raw,
+        source: 'mfg-collector',
+      });
+    }
+
     // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
     let ilomIp = ilomIpParam;
     if (!ilomIp) {
