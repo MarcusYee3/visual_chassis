@@ -41,7 +41,11 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
 
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`ILOM session timed out after ${timeoutMs}ms`));
+      const partial = output.trim();
+      reject(new Error(
+        `ILOM session timed out after ${timeoutMs}ms` +
+        (partial ? ` — partial output before kill:\n${partial}` : ' — no output captured before kill')
+      ));
     }, timeoutMs);
 
     child.on('error', (err) => {
