@@ -72,6 +72,16 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
         await new Promise((r) => setTimeout(r, delayAfterMs));
       }
       child.stdin.end();
+      // The trailing "exit" line(s) above are supposed to make this restricted ILOM CLI log
+      // out and close the connection on its own — but on real hardware that was observed to
+      // not happen even at the plain top-level "->" prompt (no nested shell to leave), leaving
+      // the process running until the full timeoutMs killed it as a hard failure even though
+      // every command had already succeeded and its output was already captured. Since we've
+      // written every command and waited out its delay by this point, there's nothing left to
+      // gain from keeping the connection open — give it a short grace window to close itself,
+      // then force it and let the existing close handler resolve with what we captured.
+      await new Promise((r) => setTimeout(r, 2000));
+      if (!child.killed) child.kill();
     })();
   });
 }
