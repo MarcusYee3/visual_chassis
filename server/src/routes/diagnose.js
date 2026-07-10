@@ -19,8 +19,11 @@ function localExec(command, timeoutMs = 15000, extraEnv = {}) {
 // those earlier attempts ran without a pseudo-terminal (confirmed by the SSH warning
 // "Pseudo-terminal will not be allocated because stdin is not a terminal" in that output),
 // and this ILOM's CLI behaves unreliably without one, unlike an interactive/manual session.
-// -tt forces PTY allocation. Commands are still written one at a time with a pause afterward
-// as defense in depth, giving the remote CLI time to settle between state transitions.
+// -tt forces PTY allocation. Commands are written one at a time with a pause afterward as
+// defense in depth, giving the remote CLI time to settle between state transitions — and
+// critically, the first command is only sent after an upfront delay for the connection/auth
+// handshake and login banner to finish (writing immediately after spawn() was observed to
+// hang the entire session, even for a single unchained command).
 function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
     const child = spawn(SSHPASS, [
@@ -51,6 +54,11 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
     });
 
     (async () => {
+      // Wait for the connection/auth handshake and the ILOM's multi-line login banner
+      // (copyright notice, warnings, hostname line) to finish before writing the first
+      // command — writing immediately after spawn() was observed to hang the whole session,
+      // the command apparently lands before the remote shell is ready to receive it.
+      await new Promise((r) => setTimeout(r, 4000));
       for (const { line, delayAfterMs } of commands) {
         child.stdin.write(`${line}\n`);
         await new Promise((r) => setTimeout(r, delayAfterMs));
