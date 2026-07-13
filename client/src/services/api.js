@@ -66,6 +66,26 @@ export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
   return handleResponse(response, 'Diagnose failed');
 };
 
+export const checkPartFailure = async (serialNumber, partId) => {
+  const params = new URLSearchParams({ serialNumber, partId });
+  const response = await fetch(`${API_BASE}/part-failures?${params}`);
+  return handleResponse(response, 'Failed to check part failure log');
+};
+
+export const logPartFailure = async (entry) => {
+  const response = await fetch(`${API_BASE}/part-failures`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry),
+  });
+  return handleResponse(response, 'Failed to log part failure');
+};
+
+export const getAllPartFailures = async () => {
+  const response = await fetch(`${API_BASE}/part-failures`);
+  return handleResponse(response, 'Failed to fetch part failure log');
+};
+
 export const updatePCIePort = async (serverId, osfpId, pcieId, status) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}/pcie/${pcieId}`, {
     method: 'PUT',

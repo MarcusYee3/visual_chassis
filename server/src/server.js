@@ -7,6 +7,7 @@ import pcieRouter from './routes/pcie.js';
 import psuRouter from './routes/psu.js';
 import diagnoseRouter from './routes/diagnose.js';
 import validateSnRouter from './routes/validateSn.js';
+import partFailuresRouter from './routes/partFailures.js';
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ app.use('/api/servers/:serverId/gbb/osfp/:osfpId/pcie', pcieRouter);
 app.use('/api/servers/:serverId/psu', psuRouter);
 app.use('/api/servers/:serverId/diagnose', diagnoseRouter);
 app.use('/api/validate-sn', validateSnRouter);
+app.use('/api/part-failures', partFailuresRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
