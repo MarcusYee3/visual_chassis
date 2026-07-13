@@ -188,20 +188,31 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                         const cableFaulted = (faults.cableFaults || []).includes(cableId);
                         const faultA = (faults.pcieFaults || []).find(f => f.iou === iouA);
                         const faultB = (faults.pcieFaults || []).find(f => f.iou === iouB);
+                        const cableColor = cableFaulted ? '#ff4444' : '#5a7ab0';
+                        const plugStyle = {
+                          width: '5px', height: '12px', borderRadius: '1px', flexShrink: 0,
+                          background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
+                          border: `1px solid ${cableColor}`,
+                          boxShadow: cableFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
+                        };
                         return (
-                          <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
-                            <div style={{ display: 'flex', gap: '3px' }}>
+                          <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}
+                            title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}>
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
                               <PCIePort id={portA.id} name={portA.name} status={portA.status}
                                 faulted={!!faultA} probability={faultA?.probability ?? null} />
+                              <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0 }}>
+                                <div style={plugStyle} />
+                                <div style={{
+                                  flex: 1, height: 0,
+                                  borderTop: `2px dotted ${cableColor}`,
+                                  filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+                                }} />
+                                <div style={plugStyle} />
+                              </div>
                               <PCIePort id={portB.id} name={portB.name} status={portB.status}
                                 faulted={!!faultB} probability={faultB?.probability ?? null} />
                             </div>
-                            <div title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}
-                              style={{
-                                width: '100%', height: '3px', borderRadius: '2px',
-                                background: cableFaulted ? '#ff4444' : '#3a5a8f',
-                                boxShadow: cableFaulted ? faultGlow : 'none',
-                              }} />
                             <div style={{
                               fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
                               letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab',
