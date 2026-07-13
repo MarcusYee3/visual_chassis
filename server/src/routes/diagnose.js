@@ -268,8 +268,12 @@ function parseLionkingOSFPOutput(output) {
 }
 
 async function runLionkingOSFPCheck(serialNumber) {
+  console.log(`[diagnose] running: /home/tester/lionking_OSFP.py ${serialNumber}`);
   const output = await localExec(`/home/tester/lionking_OSFP.py ${serialNumber}`, 30000);
-  return parseLionkingOSFPOutput(output);
+  console.log('[diagnose] lionking_OSFP.py raw output:\n', output);
+  const result = parseLionkingOSFPOutput(output);
+  console.log('[diagnose] lionking_OSFP.py parsed faults:', JSON.stringify(result.faults));
+  return result;
 }
 
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
