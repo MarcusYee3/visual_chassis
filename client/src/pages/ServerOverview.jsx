@@ -10,7 +10,7 @@ import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
 
 const genericErrorStyle = {
   width: '100%',
@@ -168,7 +168,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             <div style={{ display: 'flex', gap: '4px' }}>
               {osfpModules.map((mod) => {
                 const modIouNums = (mod.pciePorts || []).map((p) => parseInt(p.name.replace(/\D/g, ''), 10));
-                const modHasFault = (faults.pcieFaults || []).some(f => modIouNums.includes(f.iou));
+                const modHasFault = (faults.pcieFaults || []).some(f => modIouNums.includes(f.iou))
+                  || (faults.cableFaults || []).some((id) => id.split('-').slice(1).some((n) => modIouNums.includes(parseInt(n, 10))));
                 return expandedOsfp[mod.id] ? (
                   <div key={mod.id} style={{ flex: 1 }}>
                     <div style={{ ...backLinkStyle('blue'), fontSize: '12px', marginBottom: '4px' }}
@@ -176,13 +177,38 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleOsfpClick(mod.id)}>
                       ← {mod.name}
                     </div>
-                    <div style={{ display: 'flex', gap: '3px' }}>
-                      {(pciePorts[mod.id] || []).map((port) => {
-                        const portIouNum = parseInt(port.name.replace(/\D/g, ''), 10);
-                        const fault = (faults.pcieFaults || []).find(f => f.iou === portIouNum);
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      {[0, 2].map((pairStart) => {
+                        const portA = (pciePorts[mod.id] || [])[pairStart];
+                        const portB = (pciePorts[mod.id] || [])[pairStart + 1];
+                        if (!portA || !portB) return null;
+                        const iouA = parseInt(portA.name.replace(/\D/g, ''), 10);
+                        const iouB = parseInt(portB.name.replace(/\D/g, ''), 10);
+                        const cableId = `cable-${iouA}-${iouB}`;
+                        const cableFaulted = (faults.cableFaults || []).includes(cableId);
+                        const faultA = (faults.pcieFaults || []).find(f => f.iou === iouA);
+                        const faultB = (faults.pcieFaults || []).find(f => f.iou === iouB);
                         return (
-                          <PCIePort key={port.id} id={port.id} name={port.name} status={port.status}
-                            faulted={!!fault} probability={fault?.probability ?? null} />
+                          <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+                            <div style={{ display: 'flex', gap: '3px' }}>
+                              <PCIePort id={portA.id} name={portA.name} status={portA.status}
+                                faulted={!!faultA} probability={faultA?.probability ?? null} />
+                              <PCIePort id={portB.id} name={portB.name} status={portB.status}
+                                faulted={!!faultB} probability={faultB?.probability ?? null} />
+                            </div>
+                            <div title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}
+                              style={{
+                                width: '100%', height: '3px', borderRadius: '2px',
+                                background: cableFaulted ? '#ff4444' : '#3a5a8f',
+                                boxShadow: cableFaulted ? faultGlow : 'none',
+                              }} />
+                            <div style={{
+                              fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                              letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab',
+                            }}>
+                              CABLE {iouA}↔{iouB}
+                            </div>
+                          </div>
                         );
                       })}
                     </div>
@@ -200,7 +226,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             color="blue"
             alert={has('gbb')}
             interactive onClick={handleGbbClick}
-            badge={(faults.pcieFaults || []).length > 0} />
+            badge={(faults.pcieFaults || []).length > 0 || (faults.cableFaults || []).length > 0} />
         )}
 
         {/* GPU Baseboard */}

@@ -95,6 +95,7 @@ function parseIlomProblems(output) {
     pcieFaults: [], // [{ resource, iou, pcie, probability }]
     fanIds: [],
     genericErrors: [],
+    cableFaults: [],
   };
 
   const compSet = new Set();
@@ -170,7 +171,7 @@ function parseIlomProblems(output) {
 //   PS1    -  Present
 // Anything whose status isn't "Present" is treated as a fault.
 function parseHwdiagFanInfo(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
@@ -204,7 +205,7 @@ function parseHwdiagFanInfo(output) {
 // (/SYS/PS<n>/...), route it through the existing PSU highlighting; anything else becomes a
 // generic error message with no specific chassis component to highlight.
 function parseHwdiagTempGetAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -226,6 +227,57 @@ function parseHwdiagTempGetAll(output) {
 
   return { faults, raw: output };
 }
+
+// lionking_OSFP.py <SN> is the targeted check for a VERIFY_OSFP_LINKS failure — it checks IB/
+// OSFP loopback link status for a JBOG and, on a failure, prints one line per down interface,
+// e.g.:
+//   ❌ Missing / Down Links:
+//   mlx5_10  | 0000:46:00.0    | SLOT 1
+//   mlx5_11  | 0000:46:00.1    | SLOT 1
+// Each numbered SLOT (1-8) is one end of a physical loopback cable pairing two IOU ports; slots
+// pair up (1-2, 3-4, 5-6, 7-8) into the 4 cables spanning the 2 OSFP boards, left to right:
+//   slot 1-2 = IOU 6<->IOU 1     slot 3-4 = IOU 7<->IOU 2
+//   slot 5-6 = IOU 9<->IOU 4     slot 7-8 = IOU 10<->IOU 5
+// matching the port order already in serverData.js's osfpModules. A down slot means that whole
+// cable is reported faulted (a disconnected loopback typically drops both ends together).
+const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
+const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
+
+function parseLionkingOSFPOutput(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+
+  if (!/Missing \/ Down Links/i.test(output) && /error|traceback|exception/i.test(output)) {
+    faults.genericErrors.push(`lionking_OSFP.py did not complete normally: ${output.trim().slice(-500)}`);
+    return { faults, raw: output };
+  }
+
+  const downSlots = new Set();
+  const lineRe = /^\s*(\S+)\s*\|\s*(\S+)\s*\|\s*SLOT\s*(\d+)\s*$/gim;
+  let m;
+  while ((m = lineRe.exec(output)) !== null) downSlots.add(parseInt(m[3], 10));
+
+  const cableSeen = new Set();
+  for (const [slotA, slotB] of OSFP_CABLE_SLOT_PAIRS) {
+    if (!downSlots.has(slotA) && !downSlots.has(slotB)) continue;
+    const id = `cable-${OSFP_SLOT_TO_IOU[slotA]}-${OSFP_SLOT_TO_IOU[slotB]}`;
+    if (!cableSeen.has(id)) { cableSeen.add(id); faults.cableFaults.push(id); }
+  }
+  if (faults.cableFaults.length > 0) faults.components.push('gbb');
+
+  return { faults, raw: output };
+}
+
+async function runLionkingOSFPCheck(serialNumber) {
+  const output = await localExec(`/home/tester/lionking_OSFP.py ${serialNumber}`, 30000);
+  return parseLionkingOSFPOutput(output);
+}
+
+// Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
+// its specific command/script and output format are known, instead of falling back to the
+// generic "not ILOM-observable" message below.
+const MFG_COLLECTOR_TARGETED_CHECKS = {
+  VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
+};
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
 // EVE LionKing GPU_JBOG_TEST run: JBOG_NUM, TailNode_SN, HeadNode_SN, Started, Status. A
@@ -376,12 +428,18 @@ router.get('/', async (req, res) => {
     console.log('[diagnose] mfg-collector cache lookup:', JSON.stringify(collectorStatus), '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
 
     if (collectorStatus?.failing && !collectorStatus.ilomObservable) {
+      const targetedCheck = MFG_COLLECTOR_TARGETED_CHECKS[collectorStatus.checkName];
+      if (targetedCheck) {
+        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} — running its targeted check instead of the generic ILOM chain`);
+        const { faults, raw } = await targetedCheck(serialNumber);
+        return res.json({ faults, raw, source: `mfg-collector -> ${collectorStatus.checkName}` });
+      }
       return res.json({
         faults: { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [
           `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
           `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
-          `not an ILOM-observable fault — skipped ILOM diagnostics`,
-        ] },
+          `no targeted diagnostic flow yet for this check — skipped ILOM diagnostics`,
+        ], cableFaults: [] },
         raw: collectorStatus.raw,
         source: 'mfg-collector',
       });
