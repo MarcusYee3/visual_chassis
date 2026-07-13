@@ -456,10 +456,14 @@ router.get('/', async (req, res) => {
         const hwdiagOut = await runIlomSession([
           { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
           { line: 'hwdiag fan info', delayAfterMs: 5000 },
-          { line: 'hwdiag temp get all', delayAfterMs: 5000 },
+          // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
+          // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
+          // trailing "exit" landed while the diag shell was still busy and cut the sensor table
+          // off entirely (only the header printed before the connection closed).
+          { line: 'hwdiag temp get all', delayAfterMs: 15000 },
           { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
           { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-        ], ilomIp, ilomUser, ilomPassword, 45000);
+        ], ilomIp, ilomUser, ilomPassword, 55000);
         console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
         console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
