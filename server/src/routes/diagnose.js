@@ -410,7 +410,7 @@ refreshMfgCollectorCache();
 setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -423,26 +423,33 @@ router.get('/', async (req, res) => {
     // ILOM SSH session. If it already knows this SN is failing a check the ILOM chain below
     // can't see, report that directly instead of paying for a full SSH round-trip that won't
     // find anything. A cache miss (not yet polled, or genuinely not in the table) just falls
-    // through to the normal flow below, same as if this feature didn't exist.
-    const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
-    console.log('[diagnose] mfg-collector cache lookup:', JSON.stringify(collectorStatus), '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
+    // through to the normal flow below, same as if this feature didn't exist. ?skipCollector=1
+    // forces that fallthrough regardless of cache state, for pulling the full step-by-step ILOM
+    // trace on a SN that would otherwise short-circuit here.
+    if (skipCollector) {
+      console.log(`[diagnose] skipCollector set, bypassing mfg-collector cache for ${serialNumber}`);
+    } else {
+      const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
+      console.log('[diagnose] mfg-collector cache lookup:', JSON.stringify(collectorStatus), '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
 
-    if (collectorStatus?.failing && !collectorStatus.ilomObservable) {
-      const targetedCheck = MFG_COLLECTOR_TARGETED_CHECKS[collectorStatus.checkName];
-      if (targetedCheck) {
-        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} — running its targeted check instead of the generic ILOM chain`);
-        const { faults, raw } = await targetedCheck(serialNumber);
-        return res.json({ faults, raw, source: `mfg-collector -> ${collectorStatus.checkName}` });
+      if (collectorStatus?.failing && !collectorStatus.ilomObservable) {
+        const targetedCheck = MFG_COLLECTOR_TARGETED_CHECKS[collectorStatus.checkName];
+        if (targetedCheck) {
+          console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} — running its targeted check instead of the generic ILOM chain`);
+          const { faults, raw } = await targetedCheck(serialNumber);
+          return res.json({ faults, raw, source: `mfg-collector -> ${collectorStatus.checkName}` });
+        }
+        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} but no targeted flow is mapped for it — returning the generic notice and skipping the ILOM chain below`);
+        return res.json({
+          faults: { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [
+            `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
+            `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
+            `no targeted diagnostic flow yet for this check — skipped ILOM diagnostics`,
+          ], cableFaults: [] },
+          raw: collectorStatus.raw,
+          source: 'mfg-collector',
+        });
       }
-      return res.json({
-        faults: { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [
-          `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
-          `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
-          `no targeted diagnostic flow yet for this check — skipped ILOM diagnostics`,
-        ], cableFaults: [] },
-        raw: collectorStatus.raw,
-        source: 'mfg-collector',
-      });
     }
 
     // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
