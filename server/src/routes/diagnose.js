@@ -237,13 +237,58 @@ function parseHwdiagTempGetAll(output) {
 // hwdiag chain below can see — there's nothing to gain from paying the SSH round-trip cost for
 // those. Only CHECK_ILOM_FAULTS and CHECK_PSU_PRESENCE overlap with what the chain below
 // actually inspects, so those still fall through to the normal ILOM session flow.
-const MFG_COLLECTOR_URL = 'https://mfg-collector.hyvesolutions.org/out/out.evelionking_all.php';
+const MFG_COLLECTOR_BASE = 'https://mfg-collector.hyvesolutions.org';
+const MFG_COLLECTOR_LOGIN_PAGE = `${MFG_COLLECTOR_BASE}/out/out.login.php`;
+const MFG_COLLECTOR_LOGIN_URL = `${MFG_COLLECTOR_BASE}/op/op.loginA.php`;
+const MFG_COLLECTOR_DATA_URL = `${MFG_COLLECTOR_BASE}/out/out.evelionking_all.php`;
 const ILOM_OBSERVABLE_CHECKS = /CHECK_ILOM_FAULTS|CHECK_PSU_PRESENCE/i;
 
+// Requesting the data page with no session redirects (out.php -> op.logout.php -> out.login.php)
+// to a plain PHP form-login page (userid/passwd POSTed to op.loginA.php, no CSRF token) — this
+// was discovered the hard way: fetch() follows redirects by default, so the "logged out" case
+// looked identical to "SN not in the table" (both a valid 200 response, just of the wrong page)
+// until the raw HTTP trace was inspected. Log in fresh for each lookup using a service account
+// (MFG_COLLECTOR_USER/MFG_COLLECTOR_PASSWORD) and carry the resulting PHPSESSID cookie.
+function extractSessionCookie(res) {
+  const cookies = res.headers.getSetCookie ? res.headers.getSetCookie() : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : []);
+  const sessionCookie = cookies.find((c) => c.startsWith('PHPSESSID='));
+  return sessionCookie ? sessionCookie.split(';')[0] : null;
+}
+
+async function mfgCollectorLogin() {
+  const user = process.env.MFG_COLLECTOR_USER;
+  const password = process.env.MFG_COLLECTOR_PASSWORD;
+  if (!user || !password) throw new Error('MFG_COLLECTOR_USER/MFG_COLLECTOR_PASSWORD not set');
+
+  // PHP issues a fresh anonymous PHPSESSID per unauthenticated request unless one is echoed
+  // back, so grab that first, the same way a browser would before submitting the login form.
+  const loginPageRes = await fetch(MFG_COLLECTOR_LOGIN_PAGE, { signal: AbortSignal.timeout(10000) });
+  const anonCookie = extractSessionCookie(loginPageRes);
+
+  const loginRes = await fetch(MFG_COLLECTOR_LOGIN_URL, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(anonCookie ? { Cookie: anonCookie } : {}),
+    },
+    body: new URLSearchParams({ userid: user, passwd: password }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const cookie = extractSessionCookie(loginRes) || anonCookie;
+  if (!cookie) throw new Error('mfg-collector login did not return a session cookie');
+  return cookie;
+}
+
 async function fetchMfgCollectorStatus(serialNumber) {
-  const res = await fetch(MFG_COLLECTOR_URL, { signal: AbortSignal.timeout(10000) });
+  const cookie = await mfgCollectorLogin();
+  const res = await fetch(MFG_COLLECTOR_DATA_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(10000) });
   if (!res.ok) throw new Error(`mfg-collector returned HTTP ${res.status}`);
   const html = await res.text();
+  if (/name=['"]userid['"]/i.test(html)) {
+    throw new Error('mfg-collector session invalid — got the login page back instead of the data table');
+  }
 
   const stripTags = (s) => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
   const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
