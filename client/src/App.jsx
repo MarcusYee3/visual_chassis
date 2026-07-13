@@ -3,7 +3,8 @@ import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import { updateServer, diagnoseServer } from './services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [] };
+// App returns default empty faults structure
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -21,11 +22,10 @@ function App() {
     setDiagnoseError('');
     setDiagnoseStatus('');
     try {
-      const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
+      const result = await diagnoseServer('server-1', formData.sn);
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
-      const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
-      setDiagnoseStatus(!hasFaults ? 'No open problems detected.' : `Faults detected: ${f.components.length > 0 ? f.components.join(', ') : 'see error below'}`);
+      setDiagnoseStatus(f.components.length === 0 ? 'No open problems detected.' : `Faults detected: ${f.components.join(', ')}`);
     } catch (e) {
       setDiagnoseError(e.message || 'Diagnosis failed');
     } finally {
@@ -35,7 +35,6 @@ function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
-      <h1>Hyve ODM LionKing B300 <span>JBOG Overview</span></h1>
       <ServerForm onSubmit={handleFormSubmit} />
       {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
       {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}
