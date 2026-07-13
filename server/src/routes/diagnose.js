@@ -237,17 +237,30 @@ function parseHwdiagTempGetAll(output) {
 // hwdiag chain below can see — there's nothing to gain from paying the SSH round-trip cost for
 // those. Only CHECK_ILOM_FAULTS and CHECK_PSU_PRESENCE overlap with what the chain below
 // actually inspects, so those still fall through to the normal ILOM session flow.
+//
+// Measured against the real endpoint: the data page is ~600KB and takes ~45s to fully download
+// (confirmed with both curl and Node's fetch — this is the server being slow to render/flush
+// ~2200 rows, not a client bug). That's as long as the ILOM SSH chain this is meant to save time
+// on, so fetching it synchronously per diagnose request would often make things slower, not
+// faster. Instead, a background poller fetches+parses the whole table into an in-memory
+// SN -> status cache on an interval, and each /diagnose request just does an instant in-memory
+// lookup against whatever the cache currently holds.
 const MFG_COLLECTOR_BASE = 'https://mfg-collector.hyvesolutions.org';
 const MFG_COLLECTOR_LOGIN_PAGE = `${MFG_COLLECTOR_BASE}/out/out.login.php`;
 const MFG_COLLECTOR_LOGIN_URL = `${MFG_COLLECTOR_BASE}/op/op.loginA.php`;
 const MFG_COLLECTOR_DATA_URL = `${MFG_COLLECTOR_BASE}/out/out.evelionking_all.php`;
+const MFG_COLLECTOR_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const ILOM_OBSERVABLE_CHECKS = /CHECK_ILOM_FAULTS|CHECK_PSU_PRESENCE/i;
+
+let mfgCollectorCache = new Map(); // SN (uppercase) -> status object
+let mfgCollectorCacheUpdatedAt = null;
+let mfgCollectorRefreshInFlight = false;
 
 // Requesting the data page with no session redirects (out.php -> op.logout.php -> out.login.php)
 // to a plain PHP form-login page (userid/passwd POSTed to op.loginA.php, no CSRF token) — this
 // was discovered the hard way: fetch() follows redirects by default, so the "logged out" case
 // looked identical to "SN not in the table" (both a valid 200 response, just of the wrong page)
-// until the raw HTTP trace was inspected. Log in fresh for each lookup using a service account
+// until the raw HTTP trace was inspected. Log in fresh for each poll using a service account
 // (MFG_COLLECTOR_USER/MFG_COLLECTOR_PASSWORD) and carry the resulting PHPSESSID cookie.
 function extractSessionCookie(res) {
   const cookies = res.headers.getSetCookie ? res.headers.getSetCookie() : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : []);
@@ -281,19 +294,14 @@ async function mfgCollectorLogin() {
   return cookie;
 }
 
-async function fetchMfgCollectorStatus(serialNumber) {
-  const cookie = await mfgCollectorLogin();
-  const res = await fetch(MFG_COLLECTOR_DATA_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`mfg-collector returned HTTP ${res.status}`);
-  const html = await res.text();
-  if (/name=['"]userid['"]/i.test(html)) {
-    throw new Error('mfg-collector session invalid — got the login page back instead of the data table');
-  }
-
+// Parses every row into a Map keyed by both TailNode_SN and HeadNode_SN (uppercased) — a JBOG
+// entry pairs two physical servers under one shared test status, so either SN should resolve it.
+function parseMfgCollectorTable(html) {
   const stripTags = (s) => s.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
   const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
 
+  const table = new Map();
   let rowMatch;
   while ((rowMatch = rowRe.exec(html)) !== null) {
     const cells = [];
@@ -303,22 +311,51 @@ async function fetchMfgCollectorStatus(serialNumber) {
     if (cells.length < 5) continue; // header row or a row that isn't shaped like a JBOG entry
 
     const [, tailSn, headSn, started, status] = cells;
-    if (tailSn.toUpperCase() !== serialNumber.toUpperCase() && headSn.toUpperCase() !== serialNumber.toUpperCase()) continue;
-
     const failMatch = status.match(/^(.*?)[–-]\s*([A-Z0-9_]*)\s*:\s*(\d+)_([A-Z0-9_]+)\s+([\d:]+)\s*$/);
-    if (failMatch) {
-      const [, board, stage, checkNumber, checkName, duration] = failMatch;
-      return {
-        found: true, failing: true, serialNumber, tailSn, headSn, started,
-        board: board.trim(), stage, checkNumber, checkName, duration,
-        ilomObservable: ILOM_OBSERVABLE_CHECKS.test(checkName),
-        raw: status,
-      };
-    }
-    return { found: true, failing: false, serialNumber, tailSn, headSn, started, raw: status };
+    const entry = failMatch
+      ? (() => {
+          const [, board, stage, checkNumber, checkName, duration] = failMatch;
+          return {
+            found: true, failing: true, tailSn, headSn, started,
+            board: board.trim(), stage, checkNumber, checkName, duration,
+            ilomObservable: ILOM_OBSERVABLE_CHECKS.test(checkName),
+            raw: status,
+          };
+        })()
+      : { found: true, failing: false, tailSn, headSn, started, raw: status };
+
+    if (tailSn) table.set(tailSn.toUpperCase(), entry);
+    if (headSn) table.set(headSn.toUpperCase(), entry);
   }
-  return { found: false, serialNumber };
+  return table;
 }
+
+async function refreshMfgCollectorCache() {
+  if (mfgCollectorRefreshInFlight) return;
+  mfgCollectorRefreshInFlight = true;
+  try {
+    const cookie = await mfgCollectorLogin();
+    const res = await fetch(MFG_COLLECTOR_DATA_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(90000) });
+    if (!res.ok) throw new Error(`mfg-collector returned HTTP ${res.status}`);
+    const html = await res.text();
+    if (/name=['"]userid['"]/i.test(html)) {
+      throw new Error('mfg-collector session invalid — got the login page back instead of the data table');
+    }
+    mfgCollectorCache = parseMfgCollectorTable(html);
+    mfgCollectorCacheUpdatedAt = new Date();
+    console.log(`[diagnose] mfg-collector cache refreshed: ${mfgCollectorCache.size} SNs, at ${mfgCollectorCacheUpdatedAt.toISOString()}`);
+  } catch (err) {
+    console.warn('[diagnose] mfg-collector cache refresh failed, keeping previous cache:', err.message);
+  } finally {
+    mfgCollectorRefreshInFlight = false;
+  }
+}
+
+// Fire the first poll on module load (fire-and-forget — the server starts accepting requests
+// immediately; until the first refresh lands, lookups just miss and fall through to the normal
+// ILOM chain, same as if this feature didn't exist), then keep refreshing on an interval.
+refreshMfgCollectorCache();
+setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 
 router.get('/', async (req, res) => {
   const { serialNumber, ilomIp: ilomIpParam } = req.query;
@@ -329,18 +366,14 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    // Step 0: check mfg-collector's live JBOG_TEST table before opening any ILOM SSH session —
-    // if it already knows this SN is failing a check the ILOM chain below can't see, report
-    // that directly instead of paying for a full SSH round-trip that won't find anything.
-    // Fails open: any lookup problem (network, auth, unexpected page shape) just logs a warning
-    // and falls through to the normal flow below, it never blocks diagnosis.
-    let collectorStatus = null;
-    try {
-      collectorStatus = await fetchMfgCollectorStatus(serialNumber);
-      console.log('[diagnose] mfg-collector status:', JSON.stringify(collectorStatus));
-    } catch (err) {
-      console.warn('[diagnose] mfg-collector lookup failed, proceeding without it:', err.message);
-    }
+    // Step 0: check the mfg-collector cache (populated by the background poller above, not
+    // fetched live — the real page takes ~45s, too slow to pay per-request) before opening any
+    // ILOM SSH session. If it already knows this SN is failing a check the ILOM chain below
+    // can't see, report that directly instead of paying for a full SSH round-trip that won't
+    // find anything. A cache miss (not yet polled, or genuinely not in the table) just falls
+    // through to the normal flow below, same as if this feature didn't exist.
+    const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
+    console.log('[diagnose] mfg-collector cache lookup:', JSON.stringify(collectorStatus), '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
 
     if (collectorStatus?.failing && !collectorStatus.ilomObservable) {
       return res.json({
