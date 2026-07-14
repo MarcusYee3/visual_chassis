@@ -398,9 +398,13 @@ function parseGxr3FwUpdateCheck(output) {
   return { faults, raw: output };
 }
 
+// "gxr3_fw_update_check" is a shell alias (not a real path) for /home/tester/WesleyH/GXR3_update_check
+// -- same directory as eve_ip.pyc, not lionking_OSFP.py.
+const GXR3_UPDATE_CHECK_PATH = '/home/tester/WesleyH/GXR3_update_check';
+
 async function runGxr3FwUpdateCheck(serialNumber) {
-  console.log(`[diagnose] running: echo ${serialNumber} | /home/tester/gxr3_fw_update_check`);
-  const output = await localExec(`echo ${serialNumber} | /home/tester/gxr3_fw_update_check`, 30000);
+  console.log(`[diagnose] running: echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`);
+  const output = await localExec(`echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`, 30000);
   console.log('[diagnose] gxr3_fw_update_check raw output:\n', output);
   const result = parseGxr3FwUpdateCheck(output);
   console.log('[diagnose] gxr3_fw_update_check parsed faults:', JSON.stringify(result.faults));
