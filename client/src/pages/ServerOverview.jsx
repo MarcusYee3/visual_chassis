@@ -61,6 +61,10 @@ const backLinkStyle = (colorKey = 'blue') => {
 const faultBorder = '1px solid #ff4444';
 const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
 
+// Real IOU numbers carrying a GXR3 retimer card (same 8 IOUs the OSFP boards use, 1,2,4,5,6,7,9,10
+// — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
+const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
+
 function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   const [expandedGbb, setExpandedGbb] = useState(false);
@@ -306,10 +310,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               {/* Center: Retimer BD */}
               <div style={{ backgroundImage: 'radial-gradient(circle at 3.5px 3.5px, rgba(200,220,50,0.08) 0.6px, transparent 0.6px), repeating-linear-gradient(90deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 7px), linear-gradient(180deg, #22280f 0%, #161a08 100%)', backgroundSize: '7px 7px, 7px 7px, 100% 100%', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px', width: '100%' }}>
-                  {Array.from({ length: 8 }, (_, i) => (
-                    <GXR3VRetimer key={i} id={`retimer-${i}`} name={`Retimer ${i}`}
+                  {IOU_GXR3_NUMBERS.map((iou) => (
+                    <GXR3VRetimer key={iou} id={`retimer-${iou}`} name={`IOU ${iou} GXR3`}
                       onClick={() => {}}
-                      faulted={faults.retimerIds.includes(`retimer-${i}`)} />
+                      faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
                   ))}
                 </div>
                 <div style={{ textAlign: 'center' }}>

@@ -259,14 +259,17 @@ function parseHwdiagTempGetAll(output) {
 // report FAILED — that's not N isolated bad parts, it's a systemic problem, so instead of
 // highlighting every retimer/GPU/SSD individually (noisy and actively misleading about what's
 // actually wrong), the whole chassis is flagged and a head node reseat is called for. A partial
-// failure (some links down, most passing) is treated normally: retimers map to the existing
-// retimerIds highlighting, GPU/SSD links don't have a dedicated chassis element yet so they're
-// called out by number in a generic error alongside flagging the gpu/iob sections.
+// failure (some links down, most passing) is treated normally, but this command's "RetimerN" is
+// a switch-relative index (1-8) with no fixed correspondence to a real IOU number — confirmed
+// there isn't one — so a failed retimer here is reported generically rather than attributed to a
+// specific retimer-<iou> id; cross-check with the UPDATE_GXR3_FW targeted check (which reports by
+// real IOU number) to find the actual card. GPU/SSD links don't have a dedicated chassis element
+// yet either, so they're also called out by number in a generic error.
 function parseHwdiagFabricTestAll(output) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
-  const retimerSeen = new Set();
+  const failedRetimers = new Set();
   const failedGpus = new Set();
   const failedSsds = new Set();
 
@@ -281,8 +284,7 @@ function parseHwdiagFabricTestAll(output) {
     failedCount++;
     const n = parseInt(partNumStr, 10);
     if (partType === 'Retimer') {
-      const id = `retimer-${n}`;
-      if (!retimerSeen.has(id)) { retimerSeen.add(id); faults.retimerIds.push(id); }
+      failedRetimers.add(n);
       addComp('iob');
     } else if (partType === 'GPU') {
       failedGpus.add(n);
@@ -294,7 +296,6 @@ function parseHwdiagFabricTestAll(output) {
   }
 
   if (total > 0 && failedCount === total) {
-    faults.retimerIds = [];
     faults.components = ['gbb', 'gpu', 'iob', 'psu', 'bmc', 'rot'];
     faults.genericErrors.push(
       `hwdiag system fabric test all: ALL ${total} fabric links failed (0/${total} passed) — this ` +
@@ -303,6 +304,9 @@ function parseHwdiagFabricTestAll(output) {
     return { faults, raw: output };
   }
 
+  if (failedRetimers.size > 0) {
+    faults.genericErrors.push(`hwdiag system fabric test all: Retimer(s) failed (switch-relative numbering, not IOU-mapped): ${[...failedRetimers].sort((a, b) => a - b).join(', ')} — cross-check with the UPDATE_GXR3_FW check for the actual IOU`);
+  }
   if (failedGpus.size > 0) {
     faults.genericErrors.push(`hwdiag system fabric test all: GPU link(s) failed: ${[...failedGpus].sort((a, b) => a - b).join(', ')}`);
   }
@@ -361,11 +365,54 @@ async function runLionkingOSFPCheck(serialNumber) {
   return result;
 }
 
+// gxr3_fw_update_check is the targeted check for an UPDATE_GXR3_FW failure. It's interactive
+// (prompts "Please enter server SN:" on stdin rather than taking the SN as an argument like
+// lionking_OSFP.py), so the SN is piped in. It prints one line per IOU GXR3 retimer card, e.g.:
+//   IOU1 GXR3 card FW update Good
+//   IOU9 GXR3 card FW update failed
+// This reports directly by real IOU number (1,2,4,5,6,7,9,10 — the same 8 IOUs the OSFP boards
+// use), which is what the retimer UI is keyed by (retimer-<iou>) — unlike "hwdiag system fabric
+// test all"'s switch-relative RetimerN, there's no ambiguity here about which physical card failed.
+function parseGxr3FwUpdateCheck(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const retimerSeen = new Set();
+
+  const re = /IOU(\d+)\s+GXR3\s+card\s+FW\s+update\s+(\S+)/gi;
+  let m;
+  let total = 0;
+  while ((m = re.exec(output)) !== null) {
+    total++;
+    const [, iouStr, status] = m;
+    if (/^good$/i.test(status)) continue;
+    const id = `retimer-${parseInt(iouStr, 10)}`;
+    if (!retimerSeen.has(id)) { retimerSeen.add(id); faults.retimerIds.push(id); }
+    addComp('iob');
+  }
+
+  if (total === 0) {
+    faults.genericErrors.push(`gxr3_fw_update_check did not report any IOU GXR3 results: ${output.trim().slice(-500)}`);
+  }
+
+  return { faults, raw: output };
+}
+
+async function runGxr3FwUpdateCheck(serialNumber) {
+  console.log(`[diagnose] running: echo ${serialNumber} | /home/tester/gxr3_fw_update_check`);
+  const output = await localExec(`echo ${serialNumber} | /home/tester/gxr3_fw_update_check`, 30000);
+  console.log('[diagnose] gxr3_fw_update_check raw output:\n', output);
+  const result = parseGxr3FwUpdateCheck(output);
+  console.log('[diagnose] gxr3_fw_update_check parsed faults:', JSON.stringify(result.faults));
+  return result;
+}
+
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
 // its specific command/script and output format are known, instead of falling back to the
 // generic "not ILOM-observable" message below.
 const MFG_COLLECTOR_TARGETED_CHECKS = {
   VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
+  UPDATE_GXR3_FW: runGxr3FwUpdateCheck,
 };
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
