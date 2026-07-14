@@ -546,7 +546,7 @@ refreshMfgCollectorCache();
 setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -554,6 +554,21 @@ router.get('/', async (req, res) => {
   }
 
   try {
+    // ?forceCheck=<checkName> runs a specific targeted check directly, regardless of what the
+    // mfg-collector cache currently says (or whether the SN is in it at all) — the cache is a
+    // live, rolling view, so a SN you know is actually affected by a given check may have already
+    // aged out of it by the time you test through the app. Takes full precedence over everything
+    // else below, including skipCollector.
+    if (forceCheck) {
+      const targetedCheck = MFG_COLLECTOR_TARGETED_CHECKS[forceCheck];
+      if (!targetedCheck) {
+        return res.status(400).json({ error: `No targeted check mapped for "${forceCheck}". Known checks: ${Object.keys(MFG_COLLECTOR_TARGETED_CHECKS).join(', ')}` });
+      }
+      console.log(`[diagnose] forceCheck=${forceCheck} set, running its targeted check directly for ${serialNumber}, bypassing mfg-collector entirely`);
+      const { faults, raw } = await targetedCheck(serialNumber);
+      return res.json({ faults, raw, source: `forced -> ${forceCheck}` });
+    }
+
     // Step 0: check the mfg-collector cache (populated by the background poller above, not
     // fetched live — the real page takes ~45s, too slow to pay per-request) before opening any
     // ILOM SSH session. If it already knows this SN is failing a check the ILOM chain below
