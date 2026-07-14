@@ -249,6 +249,70 @@ function parseHwdiagTempGetAll(output) {
   return { faults, raw: output };
 }
 
+// hwdiag system fabric test all prints, per PCIe switch, one PASSED/FAILED line per link
+// (Retimer/GPU/SSD), e.g.:
+//   SWITCH: PCIE_SW1
+//       PCIE_SW1 Retimer1    x16 @ 32.0GT/s       : PASSED
+//       PCIE_SW1 GPU4        x16 @ 32.0GT/s       : PASSED
+//       PCIE_SW1 SSD1        x4  @ 32.0GT/s       : PASSED
+// On real hardware, a genuinely bad head node connection makes *every* link on *every* switch
+// report FAILED — that's not N isolated bad parts, it's a systemic problem, so instead of
+// highlighting every retimer/GPU/SSD individually (noisy and actively misleading about what's
+// actually wrong), the whole chassis is flagged and a head node reseat is called for. A partial
+// failure (some links down, most passing) is treated normally: retimers map to the existing
+// retimerIds highlighting, GPU/SSD links don't have a dedicated chassis element yet so they're
+// called out by number in a generic error alongside flagging the gpu/iob sections.
+function parseHwdiagFabricTestAll(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const retimerSeen = new Set();
+  const failedGpus = new Set();
+  const failedSsds = new Set();
+
+  const lineRe = /PCIE_SW(\d+)\s+(Retimer|GPU|SSD)(\d+)\s+.*?:\s*(PASSED|FAILED)\s*$/gim;
+  let m;
+  let total = 0;
+  let failedCount = 0;
+  while ((m = lineRe.exec(output)) !== null) {
+    total++;
+    const [, , partType, partNumStr, status] = m;
+    if (status.toUpperCase() !== 'FAILED') continue;
+    failedCount++;
+    const n = parseInt(partNumStr, 10);
+    if (partType === 'Retimer') {
+      const id = `retimer-${n}`;
+      if (!retimerSeen.has(id)) { retimerSeen.add(id); faults.retimerIds.push(id); }
+      addComp('iob');
+    } else if (partType === 'GPU') {
+      failedGpus.add(n);
+      addComp('gpu');
+    } else if (partType === 'SSD') {
+      failedSsds.add(n);
+      addComp('iob');
+    }
+  }
+
+  if (total > 0 && failedCount === total) {
+    faults.retimerIds = [];
+    faults.components = ['gbb', 'gpu', 'iob', 'psu', 'bmc', 'rot'];
+    faults.genericErrors.push(
+      `hwdiag system fabric test all: ALL ${total} fabric links failed (0/${total} passed) — this ` +
+      `indicates a head node connectivity issue, not isolated component failures. Reseat the head node and retest.`
+    );
+    return { faults, raw: output };
+  }
+
+  if (failedGpus.size > 0) {
+    faults.genericErrors.push(`hwdiag system fabric test all: GPU link(s) failed: ${[...failedGpus].sort((a, b) => a - b).join(', ')}`);
+  }
+  if (failedSsds.size > 0) {
+    faults.genericErrors.push(`hwdiag system fabric test all: SSD link(s) failed: ${[...failedSsds].sort((a, b) => a - b).join(', ')}`);
+  }
+
+  return { faults, raw: output };
+}
+
 // lionking_OSFP.py <SN> is the targeted check for a VERIFY_OSFP_LINKS failure — it checks IB/
 // OSFP loopback link status for a JBOG and, on a failure, prints one line per down interface,
 // e.g.:
@@ -551,9 +615,14 @@ router.get('/', async (req, res) => {
           // trailing "exit" landed while the diag shell was still busy and cut the sensor table
           // off entirely (only the header printed before the connection closed).
           { line: 'hwdiag temp get all', delayAfterMs: 15000 },
+          // "hwdiag system fabric test all" actively trains/tests 24 PCIe links (8 switches x 3
+          // each), not just reading cached values like the two commands above — no real-hardware
+          // timing for this one yet, so 20000ms is a conservative starting estimate pending
+          // confirmation; bump it if it turns out to get cut off the same way temp get all did.
+          { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
           { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
           { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-        ], ilomIp, ilomUser, ilomPassword, 55000);
+        ], ilomIp, ilomUser, ilomPassword, 75000);
         console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
         console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
@@ -566,7 +635,15 @@ router.get('/', async (req, res) => {
           console.log('[diagnose] hwdiag fan info found nothing, scanning hwdiag temp get all for 0.00 deg C sensors');
           const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
           console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
-          parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
+
+          if (tempParsed.faults.components.length > 0) {
+            parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
+          } else {
+            console.log('[diagnose] hwdiag temp get all found nothing, scanning hwdiag system fabric test all');
+            const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
+            console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
+            parsed = { faults: fabricParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
+          }
         }
       }
     }
