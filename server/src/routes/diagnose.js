@@ -739,7 +739,32 @@ router.get('/', async (req, res) => {
             console.log('[diagnose] hwdiag temp get all found nothing, scanning hwdiag system fabric test all');
             const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
             console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
-            parsed = { faults: fabricParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
+
+            if (fabricParsed.faults.components.length > 0) {
+              parsed = { faults: fabricParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
+            } else {
+              // The whole generic ILOM chain found nothing. If this SN isn't in the mfg-collector
+              // cache (or isn't currently failing there), Step 0 never had a specific check name
+              // to dispatch to — but a real failure one of the targeted scripts catches can still
+              // exist even though nothing here or on the collector page currently points at it.
+              // Try every known targeted check in turn (same scripts mfg-collector-driven dispatch
+              // uses) rather than giving up. This adds real time (each script gets its own ~30s
+              // budget) only for the case where every earlier tier already came up empty.
+              console.log('[diagnose] hwdiag system fabric test all found nothing either, trying every known targeted check as a last resort');
+              let raw = `${ilomOut}\n${fmadmOut}\n${hwdiagOut}`;
+              let lastResultFaults = fabricParsed.faults;
+              for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+                console.log(`[diagnose] trying targeted check ${checkName} for ${serialNumber}`);
+                const result = await targetedCheck(serialNumber);
+                raw += `\n${result.raw}`;
+                lastResultFaults = result.faults;
+                if (result.faults.components.length > 0) {
+                  console.log(`[diagnose] ${checkName} found something:`, JSON.stringify(result.faults));
+                  break;
+                }
+              }
+              parsed = { faults: lastResultFaults, raw };
+            }
           }
         }
       }
