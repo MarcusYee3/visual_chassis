@@ -379,10 +379,16 @@ function parseGxr3FwUpdateCheck(output) {
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const retimerSeen = new Set();
 
+  // The script colors its output with ANSI codes (e.g. "\x1b[92mIOU2 ... Good\x1b[0m") — left in,
+  // \S+ greedily swallows the trailing reset code into the captured status ("Good\x1b[0m"), which
+  // then fails an exact "good" match and gets every single IOU wrongly flagged as failed. Strip
+  // them before matching.
+  const plain = output.replace(/\x1b\[[0-9;]*m/g, '');
+
   const re = /IOU(\d+)\s+GXR3\s+card\s+FW\s+update\s+(\S+)/gi;
   let m;
   let total = 0;
-  while ((m = re.exec(output)) !== null) {
+  while ((m = re.exec(plain)) !== null) {
     total++;
     const [, iouStr, status] = m;
     if (/^good$/i.test(status)) continue;
@@ -392,7 +398,7 @@ function parseGxr3FwUpdateCheck(output) {
   }
 
   if (total === 0) {
-    faults.genericErrors.push(`gxr3_fw_update_check did not report any IOU GXR3 results: ${output.trim().slice(-500)}`);
+    faults.genericErrors.push(`gxr3_fw_update_check did not report any IOU GXR3 results: ${plain.trim().slice(-500)}`);
   }
 
   return { faults, raw: output };
