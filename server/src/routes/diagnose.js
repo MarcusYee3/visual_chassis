@@ -86,6 +86,29 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
   });
 }
 
+// Merges any number of faults objects into one, unioning each array field (deduped) rather than
+// stopping at the first non-empty result — every diagnostic tier runs unconditionally and its
+// findings are combined, so a unit with e.g. both a fabric-test PCIe failure and a GXR3 firmware
+// failure shows both instead of only whichever tier ran first.
+function mergeFaults(...faultsList) {
+  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set() };
+
+  for (const f of faultsList) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults']) {
+      for (const id of f[key] || []) {
+        if (!seen[key].has(id)) { seen[key].add(id); merged[key].push(id); }
+      }
+    }
+    for (const p of f.pcieFaults || []) {
+      const key = p.resource || `${p.iou}-${p.pcie}`;
+      if (!seen.pcieFaults.has(key)) { seen.pcieFaults.add(key); merged.pcieFaults.push(p); }
+    }
+    for (const g of f.genericErrors || []) merged.genericErrors.push(g);
+  }
+  return merged;
+}
+
 function parseIlomProblems(output) {
   const faults = {
     components: [],
@@ -670,105 +693,73 @@ router.get('/', async (req, res) => {
       ilomIp, ilomUser, ilomPassword, 30000
     );
     console.log('[diagnose] ILOM raw output:\n', ilomOut);
-    let parsed = parseIlomProblems(ilomOut);
-    console.log('[diagnose] parsed faults:', JSON.stringify(parsed.faults));
+    const openProblemsParsed = parseIlomProblems(ilomOut);
+    console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
 
-    // Step 3: fall back to the fault management shell, then the diag shell's hwdiag fan and
-    // temp scans, when open problems reports nothing. "exit" is required to leave the fault
-    // mgmt shell before the diag shell can be entered in the same session. Commands are
-    // written one at a time to a live session with a pause after each — delivering them all
-    // at once (heredoc or printf pipe) was observed on real hardware to drop/duplicate lines.
-    if (parsed.faults.components.length === 0) {
-      console.log('[diagnose] no open problems reported, falling back to fmadm faulty -a / hwdiag fan info / hwdiag temp get all');
+    // Step 3: run every remaining diagnostic tier unconditionally and merge all findings, rather
+    // than stopping at the first tier that finds something — a unit can have more than one real
+    // problem at once (e.g. a fabric-test PCIe failure *and* a GXR3 firmware failure), and
+    // stopping early would silently hide whichever one didn't happen to run first. This is
+    // deliberately slow (every diagnosis now pays for every check, every time) in exchange for
+    // completeness.
+    //
+    // fmadm and hwdiag are run as two separate sessions (rather than one combined session/
+    // buffer) so each output is parsed in isolation. parseIlomProblems's "/SYS/PS<n>" regex
+    // matches any mention of a PSU resource, not just faulted ones — running it against a
+    // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
+    // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
+    // faulted, instead of only the ones genuinely at 0.00 deg C.
+    console.log('[diagnose] running fmadm faulty -a / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally');
 
-      // fmadm and hwdiag are run as two separate sessions (rather than one combined session/
-      // buffer) so each output is parsed in isolation. parseIlomProblems's "/SYS/PS<n>" regex
-      // matches any mention of a PSU resource, not just faulted ones — running it against a
-      // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
-      // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
-      // faulted, instead of only the ones genuinely at 0.00 deg C.
-      // Splitting into two sessions means paying the connection handshake + login banner wait
-      // twice, and on real hardware "fmadm faulty -a" itself was observed to still be printing
-      // past the 5s delay that was enough when it was one leg of a single 55s-budget session —
-      // give this session its own longer delay and timeout rather than reusing the old budget.
-      const fmadmOut = await runIlomSession([
-        { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
-        { line: 'fmadm faulty -a', delayAfterMs: 10000 },
-        { line: 'exit', delayAfterMs: 1500 },
-      ], ilomIp, ilomUser, ilomPassword, 45000);
-      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
+    const fmadmOut = await runIlomSession([
+      { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
+      { line: 'fmadm faulty -a', delayAfterMs: 10000 },
+      { line: 'exit', delayAfterMs: 1500 },
+    ], ilomIp, ilomUser, ilomPassword, 45000);
+    console.log('[diagnose] fmadm raw output:\n', fmadmOut);
+    const fmadmParsed = parseIlomProblems(fmadmOut);
+    console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
 
-      const fmadmParsed = parseIlomProblems(fmadmOut);
-      console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+    const hwdiagOut = await runIlomSession([
+      { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+      { line: 'hwdiag fan info', delayAfterMs: 5000 },
+      // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
+      // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
+      // trailing "exit" landed while the diag shell was still busy and cut the sensor table
+      // off entirely (only the header printed before the connection closed).
+      { line: 'hwdiag temp get all', delayAfterMs: 15000 },
+      // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
+      // cached values like the two commands above — no real-hardware timing confirmation for
+      // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
+      // to get cut off the same way temp get all did.
+      { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
+      { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
+      { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
+    ], ilomIp, ilomUser, ilomPassword, 75000);
+    console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
-      if (fmadmParsed.faults.components.length > 0) {
-        parsed = { faults: fmadmParsed.faults, raw: `${ilomOut}\n${fmadmOut}` };
-      } else {
-        const hwdiagOut = await runIlomSession([
-          { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
-          { line: 'hwdiag fan info', delayAfterMs: 5000 },
-          // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
-          // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
-          // trailing "exit" landed while the diag shell was still busy and cut the sensor table
-          // off entirely (only the header printed before the connection closed).
-          { line: 'hwdiag temp get all', delayAfterMs: 15000 },
-          // "hwdiag system fabric test all" actively trains/tests 24 PCIe links (8 switches x 3
-          // each), not just reading cached values like the two commands above — no real-hardware
-          // timing for this one yet, so 20000ms is a conservative starting estimate pending
-          // confirmation; bump it if it turns out to get cut off the same way temp get all did.
-          { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
-          { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
-          { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-        ], ilomIp, ilomUser, ilomPassword, 75000);
-        console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
+    const fanParsed = parseHwdiagFanInfo(hwdiagOut);
+    console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
+    const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
+    console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
+    const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
+    console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
 
-        console.log('[diagnose] fmadm found nothing, scanning hwdiag fan info for non-Present fans/PSUs');
-        const fanParsed = parseHwdiagFanInfo(hwdiagOut);
-        console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
-
-        if (fanParsed.faults.components.length > 0) {
-          parsed = { faults: fanParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
-        } else {
-          console.log('[diagnose] hwdiag fan info found nothing, scanning hwdiag temp get all for 0.00 deg C sensors');
-          const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
-          console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
-
-          if (tempParsed.faults.components.length > 0) {
-            parsed = { faults: tempParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
-          } else {
-            console.log('[diagnose] hwdiag temp get all found nothing, scanning hwdiag system fabric test all');
-            const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
-            console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
-
-            if (fabricParsed.faults.components.length > 0) {
-              parsed = { faults: fabricParsed.faults, raw: `${ilomOut}\n${fmadmOut}\n${hwdiagOut}` };
-            } else {
-              // The whole generic ILOM chain found nothing. If this SN isn't in the mfg-collector
-              // cache (or isn't currently failing there), Step 0 never had a specific check name
-              // to dispatch to — but a real failure one of the targeted scripts catches can still
-              // exist even though nothing here or on the collector page currently points at it.
-              // Try every known targeted check in turn (same scripts mfg-collector-driven dispatch
-              // uses) rather than giving up. This adds real time (each script gets its own ~30s
-              // budget) only for the case where every earlier tier already came up empty.
-              console.log('[diagnose] hwdiag system fabric test all found nothing either, trying every known targeted check as a last resort');
-              let raw = `${ilomOut}\n${fmadmOut}\n${hwdiagOut}`;
-              let lastResultFaults = fabricParsed.faults;
-              for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
-                console.log(`[diagnose] trying targeted check ${checkName} for ${serialNumber}`);
-                const result = await targetedCheck(serialNumber);
-                raw += `\n${result.raw}`;
-                lastResultFaults = result.faults;
-                if (result.faults.components.length > 0) {
-                  console.log(`[diagnose] ${checkName} found something:`, JSON.stringify(result.faults));
-                  break;
-                }
-              }
-              parsed = { faults: lastResultFaults, raw };
-            }
-          }
-        }
-      }
+    let raw = `${ilomOut}\n${fmadmOut}\n${hwdiagOut}`;
+    const targetedFaultsList = [];
+    for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+      console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
+      const result = await targetedCheck(serialNumber);
+      raw += `\n${result.raw}`;
+      targetedFaultsList.push(result.faults);
+      console.log(`[diagnose] ${checkName} parsed faults:`, JSON.stringify(result.faults));
     }
+
+    const mergedFaults = mergeFaults(
+      openProblemsParsed.faults, fmadmParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
+    );
+    console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
+    const parsed = { faults: mergedFaults, raw };
 
     res.json(parsed);
   } catch (err) {
