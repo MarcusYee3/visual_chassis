@@ -249,22 +249,35 @@ function parseHwdiagTempGetAll(output) {
   return { faults, raw: output };
 }
 
-// hwdiag system fabric test all prints, per PCIe switch, one PASSED/FAILED line per link
-// (Retimer/GPU/SSD), e.g.:
+// hwdiag system fabric test all has been observed in two entirely different real formats,
+// apparently depending on platform:
+//
+// Format A ("G5-8hv" platform): one PASSED/FAILED line per switch/link (Retimer/GPU/SSD):
 //   SWITCH: PCIE_SW1
 //       PCIE_SW1 Retimer1    x16 @ 32.0GT/s       : PASSED
 //       PCIE_SW1 GPU4        x16 @ 32.0GT/s       : PASSED
 //       PCIE_SW1 SSD1        x4  @ 32.0GT/s       : PASSED
 // On real hardware, a genuinely bad head node connection makes *every* link on *every* switch
-// report FAILED — that's not N isolated bad parts, it's a systemic problem, so instead of
-// highlighting every retimer/GPU/SSD individually (noisy and actively misleading about what's
-// actually wrong), the whole chassis is flagged and a head node reseat is called for. A partial
-// failure (some links down, most passing) is treated normally, but this command's "RetimerN" is
-// a switch-relative index (1-8) with no fixed correspondence to a real IOU number — confirmed
-// there isn't one — so a failed retimer here is reported generically rather than attributed to a
-// specific retimer-<iou> id; cross-check with the UPDATE_GXR3_FW targeted check (which reports by
-// real IOU number) to find the actual card. GPU/SSD links don't have a dedicated chassis element
-// yet either, so they're also called out by number in a generic error.
+// report FAILED in this format — that's not N isolated bad parts, it's a systemic problem, so
+// instead of highlighting every retimer/GPU/SSD individually (noisy and actively misleading
+// about what's actually wrong), the whole chassis is flagged and a head node reseat is called
+// for. A partial failure (some links down, most passing) is treated normally, but this command's
+// "RetimerN" is a switch-relative index (1-8) with no fixed correspondence to a real IOU number
+// — confirmed there isn't one — so a failed retimer here is reported generically rather than
+// attributed to a specific retimer-<iou> id; cross-check with the UPDATE_GXR3_FW targeted check
+// (which reports by real IOU number) to find the actual card. GPU/SSD links don't have a
+// dedicated chassis element yet either, so they're also called out by number in a generic error.
+//
+// Format B ("3U Flex" platform): a CPU-core/UPI-link/memory-controller/PCI-device report, with
+// PCIe devices identified by real /SYS/IOU<n>/PCIE<n> paths, e.g.:
+//   CPU 0 PCI Devices:
+//       /SYS/IOU13/PCIE1300    x8  @ 32.0GT/s         : PASSED
+//       /SYS/IOU1/PCIE100      Not Trained            : FAILED
+// This has no Retimer/GPU/SSD lines at all, so format A's regex matches nothing on it — it's
+// parsed separately below and reuses the existing pcieFaults shape/highlighting (same
+// /SYS/IOU<n>/PCIE<n> convention used elsewhere in this file), since these are real, unambiguous
+// IOU numbers. No real-hardware evidence yet of what a systemic/all-failed case looks like in
+// this format, so the "reseat head node" heuristic only applies to format A for now.
 function parseHwdiagFabricTestAll(output) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
   const compSet = new Set();
@@ -312,6 +325,18 @@ function parseHwdiagFabricTestAll(output) {
   }
   if (failedSsds.size > 0) {
     faults.genericErrors.push(`hwdiag system fabric test all: SSD link(s) failed: ${[...failedSsds].sort((a, b) => a - b).join(', ')}`);
+  }
+
+  // Format B pass — no-op if this output was actually format A (the regex just won't match).
+  const pcieSeen = new Set();
+  const iouPcieLineRe = /(\/SYS\/IOU(\d+)\/PCIE(\d+)\S*)\s+.*?:\s*(PASSED|FAILED)\s*$/gim;
+  while ((m = iouPcieLineRe.exec(output)) !== null) {
+    const [, resource, iouStr, pcieStr, status] = m;
+    if (status.toUpperCase() !== 'FAILED') continue;
+    if (pcieSeen.has(resource)) continue;
+    pcieSeen.add(resource);
+    faults.pcieFaults.push({ resource, iou: parseInt(iouStr, 10), pcie: parseInt(pcieStr, 10), probability: null });
+    addComp('gbb');
   }
 
   return { faults, raw: output };
