@@ -105,6 +105,7 @@ function parseIlomProblems(output) {
   const psuSeen = new Set();
   const retimerSeen = new Set();
   const e1sSeen = new Set();
+  const fanSeen = new Set();
 
   let m;
 
@@ -114,6 +115,26 @@ function parseIlomProblems(output) {
     addComp('psu');
   }
   if (!compSet.has('psu') && /class\s*=\s*PSUMOD/i.test(output)) addComp('psu');
+
+  // Fan faults — "hwdiag fan info" only reports physical presence ("Present"), not health, so a
+  // fan can be present yet faulty (rotating too slowly, etc.). The real fault shows up as a
+  // Suspect block (fmadm faulty -a) or an Open_Problems entry naming a specific fan module, e.g.
+  // "Affects: /SYS/FANB1/FM3" / "Resource Location: /SYS/FANB1/FM3/F1" — extract the FM number
+  // from either shape.
+  const fanRe = /\/SYS\/FANB?\d*\/FM(\d+)/gi;
+  while ((m = fanRe.exec(output)) !== null) {
+    const n = parseInt(m[1], 10);
+    add(faults.fanIds, fanSeen, n);
+    addComp('gpu');
+  }
+  // A fan-class problem can also be reported without naming one specific FM (e.g.
+  // "alert.chassis.config.fan.capacity-deficient" affecting "/SYS" as a whole, from multiple fan
+  // failures/missing fans) — surface that too instead of silently dropping it just because no
+  // single fan number could be extracted.
+  if (fanSeen.size === 0 && /fault\.chassis\.device\.fan|alert\.chassis\.config\.fan|fan (?:module|capacity)/i.test(output)) {
+    faults.genericErrors.push('Fan-related problem reported (insufficient cooling capacity or multiple fan issues) — see raw output for detail');
+    addComp('gpu');
+  }
 
   if (/\/SYS\/GPU|GPU[\s_]?BASEBOARD|GPUBD|number of GPU|GPU.*not present/i.test(output)) addComp('gpu');
   if (/\/SYS\/BMC\b/i.test(output)) addComp('bmc');
