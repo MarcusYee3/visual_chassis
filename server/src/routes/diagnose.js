@@ -145,9 +145,18 @@ function parseIlomProblems(output) {
   // Suspect block (fmadm faulty -a) or an Open_Problems entry naming a specific fan module, e.g.
   // "Affects: /SYS/FANB1/FM3" / "Resource Location: /SYS/FANB1/FM3/F1" — extract the FM number
   // from either shape.
-  const fanRe = /\/SYS\/FANB?\d*\/FM(\d+)/gi;
+  //
+  // There are 5 fan boards (FANB1-5), each holding 5 fan modules numbered FM1-5 *within that
+  // board* — FM numbering resets per board, it is not a global fan index. The chassis' flat fan
+  // numbering (as used elsewhere, e.g. the GPU baseboard fan grid) is
+  // (board - 1) * 5 + slot — confirmed on real hardware: FANB2/FM3 is fan 8, FANB3/FM2 is fan 12.
+  // The board number must be captured and folded into this formula; using the raw FM slot alone
+  // (as before) silently collapses e.g. FANB1/FM3 and FANB2/FM3 onto the same fan id.
+  const fanRe = /\/SYS\/FANB?(\d*)\/FM(\d+)/gi;
   while ((m = fanRe.exec(output)) !== null) {
-    const n = parseInt(m[1], 10);
+    const board = m[1] ? parseInt(m[1], 10) : 1;
+    const slot = parseInt(m[2], 10);
+    const n = (board - 1) * 5 + slot;
     add(faults.fanIds, fanSeen, n);
     addComp('gpu');
   }
