@@ -42,6 +42,8 @@ function LogFailurePanel({ serialNumber, parts, checkName, source, onDismiss }) 
   const [statusByPart, setStatusByPart] = useState({});
   const [confirmTarget, setConfirmTarget] = useState(null); // { partId, partLabel, existing }
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [bulkLogging, setBulkLogging] = useState(false);
 
   if (!parts || parts.length === 0) return null;
 
@@ -76,12 +78,54 @@ function LogFailurePanel({ serialNumber, parts, checkName, source, onDismiss }) 
     }
   };
 
+  // Logs every part that isn't already logged (in this session or in the DB) in one click. Parts
+  // that already have an existing DB entry are left alone rather than silently duplicated — the
+  // user can still log those individually, which goes through the normal already-logged confirm.
+  const handleLogAllClick = async () => {
+    setError('');
+    setNotice('');
+    setBulkLogging(true);
+    let loggedCount = 0;
+    let skippedCount = 0;
+    try {
+      for (const part of parts) {
+        if (statusByPart[part.partId] === STATUS_LOGGED) continue;
+        const existing = await checkPartFailure(serialNumber, part.partId);
+        if (existing && existing.length > 0) {
+          skippedCount++;
+          continue;
+        }
+        await doLog(part);
+        loggedCount++;
+      }
+      const summary = [];
+      if (loggedCount > 0) summary.push(`logged ${loggedCount} part${loggedCount === 1 ? '' : 's'}`);
+      if (skippedCount > 0) summary.push(`${skippedCount} already logged — use its button to confirm logging again`);
+      setNotice(summary.length > 0 ? summary.join('; ') : 'Nothing new to log.');
+    } catch (e) {
+      setError(e.message || 'Failed to log all failures');
+    } finally {
+      setBulkLogging(false);
+    }
+  };
+
+  const allLogged = parts.every((p) => statusByPart[p.partId] === STATUS_LOGGED);
+
   return (
     <div style={panelStyle}>
       <div style={{ ...rowStyle }}>
         <span style={{ ...labelStyle, color: '#8fa8d6' }}>LOG PART FAILURE — {serialNumber}</span>
-        <span style={{ cursor: 'pointer', color: '#6a7a99', fontSize: '13px' }} onClick={onDismiss} role="button" tabIndex={0}
-          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onDismiss()}>✕</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button
+            style={{ ...buttonStyle(), opacity: (bulkLogging || allLogged) ? 0.5 : 1, cursor: (bulkLogging || allLogged) ? 'default' : 'pointer' }}
+            onClick={handleLogAllClick}
+            disabled={bulkLogging || allLogged}
+          >
+            {bulkLogging ? 'Logging…' : 'Log All'}
+          </button>
+          <span style={{ cursor: 'pointer', color: '#6a7a99', fontSize: '13px' }} onClick={onDismiss} role="button" tabIndex={0}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onDismiss()}>✕</span>
+        </div>
       </div>
 
       {parts.map((part) => {
@@ -98,6 +142,7 @@ function LogFailurePanel({ serialNumber, parts, checkName, source, onDismiss }) 
         );
       })}
 
+      {notice && <div style={{ ...fontStyle, fontSize: '10px', color: '#a8c4e8' }}>{notice}</div>}
       {error && <div style={{ ...fontStyle, fontSize: '10px', color: '#ff8080' }}>{error}</div>}
 
       {confirmTarget && (
