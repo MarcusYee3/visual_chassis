@@ -6,6 +6,7 @@ import PCIePort from '../components/PCIePorts/PCIePort';
 import PSUPort from '../components/PSUPorts/PSUPort';
 import E1SBoard from '../components/E1SBoards/E1SBoard';
 import GXR3VRetimer from '../components/GXR3VRetimer/GXR3VRetimer';
+import PCIeSwitch from '../components/PCIeSwitch/PCIeSwitch';
 import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
@@ -61,28 +62,23 @@ const backLinkStyle = (colorKey = 'blue') => {
 const faultBorder = '1px solid #ff4444';
 const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
 
-const PCIE_LANE_PINK = '#f472b6';
-const PCIE_LANE_PINK_FAULT = '#ff2f92';
-
-// 8 PCIe lanes sit under each IOU (per the /SYS/IOU<n>/PCIE<lane*100 + n> convention seen in
+// 8 PCIe switches sit under each IOU (per the /SYS/IOU<n>/PCIE<lane*100 + n> convention seen in
 // real ILOM fault output, e.g. /SYS/IOU10/PCIE1000 is IOU 10, lane 0) — render them left to
-// right and highlight any lane that shows up in faults.pcieFaults for this IOU.
-function PcieLaneRow({ iou, pcieFaults }) {
+// right, same chip shape/size as the IOU retimer modules, and highlight any that show up in
+// faults.pcieFaults for this IOU.
+function PcieSwitchRow({ iou, pcieFaults }) {
   const iouFaults = (pcieFaults || []).filter((f) => f.iou === iou);
   return (
-    <div style={{ display: 'flex', gap: '2px', marginTop: '3px' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px', marginTop: '4px', width: '100%' }}>
       {Array.from({ length: 8 }, (_, lane) => {
         const fault = iouFaults.find((f) => f.pcie % 100 === lane);
         return (
-          <div
+          <PCIeSwitch
             key={lane}
+            id={`pcie-switch-iou${iou}-${lane}`}
+            label={`${lane + 1}`}
+            faulted={!!fault}
             title={`IOU${iou} PCIe ${lane + 1}${fault ? ` — faulted${fault.probability != null ? ` (${fault.probability}%)` : ''}` : ''}`}
-            style={{
-              width: '7px', height: '7px', borderRadius: '1px',
-              background: fault ? PCIE_LANE_PINK_FAULT : 'rgba(244,114,182,0.3)',
-              border: `1px solid ${fault ? PCIE_LANE_PINK_FAULT : PCIE_LANE_PINK}`,
-              boxShadow: fault ? '0 0 5px rgba(255,47,146,0.9)' : 'none',
-            }}
           />
         );
       })}
@@ -235,7 +231,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                                 <PCIePort id={portA.id} name={portA.name} status={portA.status}
                                   faulted={!!faultA} probability={faultA?.probability ?? null} />
-                                <PcieLaneRow iou={iouA} pcieFaults={faults.pcieFaults} />
+                                <PcieSwitchRow iou={iouA} pcieFaults={faults.pcieFaults} />
                               </div>
                               <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0, marginTop: '12px' }}>
                                 <div style={plugStyle} />
@@ -249,7 +245,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                                 <PCIePort id={portB.id} name={portB.name} status={portB.status}
                                   faulted={!!faultB} probability={faultB?.probability ?? null} />
-                                <PcieLaneRow iou={iouB} pcieFaults={faults.pcieFaults} />
+                                <PcieSwitchRow iou={iouB} pcieFaults={faults.pcieFaults} />
                               </div>
                             </div>
                             <div style={{
