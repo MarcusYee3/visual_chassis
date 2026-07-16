@@ -61,6 +61,35 @@ const backLinkStyle = (colorKey = 'blue') => {
 const faultBorder = '1px solid #ff4444';
 const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
 
+const PCIE_LANE_PINK = '#f472b6';
+const PCIE_LANE_PINK_FAULT = '#ff2f92';
+
+// 8 PCIe lanes sit under each IOU (per the /SYS/IOU<n>/PCIE<lane*100 + n> convention seen in
+// real ILOM fault output, e.g. /SYS/IOU10/PCIE1000 is IOU 10, lane 0) — render them left to
+// right and highlight any lane that shows up in faults.pcieFaults for this IOU.
+function PcieLaneRow({ iou, pcieFaults }) {
+  const iouFaults = (pcieFaults || []).filter((f) => f.iou === iou);
+  return (
+    <div style={{ display: 'flex', gap: '2px', marginTop: '3px' }}>
+      {Array.from({ length: 8 }, (_, lane) => {
+        const fault = iouFaults.find((f) => f.pcie % 100 === lane);
+        return (
+          <div
+            key={lane}
+            title={`IOU${iou} PCIe ${lane + 1}${fault ? ` — faulted${fault.probability != null ? ` (${fault.probability}%)` : ''}` : ''}`}
+            style={{
+              width: '7px', height: '7px', borderRadius: '1px',
+              background: fault ? PCIE_LANE_PINK_FAULT : 'rgba(244,114,182,0.3)',
+              border: `1px solid ${fault ? PCIE_LANE_PINK_FAULT : PCIE_LANE_PINK}`,
+              boxShadow: fault ? '0 0 5px rgba(255,47,146,0.9)' : 'none',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 // Real IOU numbers carrying a GXR3 retimer card (same 8 IOUs the OSFP boards use, 1,2,4,5,6,7,9,10
 // — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
 const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
@@ -202,10 +231,13 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                         return (
                           <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}
                             title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}>
-                            <div style={{ display: 'flex', alignItems: 'center' }}>
-                              <PCIePort id={portA.id} name={portA.name} status={portA.status}
-                                faulted={!!faultA} probability={faultA?.probability ?? null} />
-                              <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                                <PCIePort id={portA.id} name={portA.name} status={portA.status}
+                                  faulted={!!faultA} probability={faultA?.probability ?? null} />
+                                <PcieLaneRow iou={iouA} pcieFaults={faults.pcieFaults} />
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0, marginTop: '12px' }}>
                                 <div style={plugStyle} />
                                 <div style={{
                                   flex: 1, height: 0,
@@ -214,8 +246,11 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                                 }} />
                                 <div style={plugStyle} />
                               </div>
-                              <PCIePort id={portB.id} name={portB.name} status={portB.status}
-                                faulted={!!faultB} probability={faultB?.probability ?? null} />
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                                <PCIePort id={portB.id} name={portB.name} status={portB.status}
+                                  faulted={!!faultB} probability={faultB?.probability ?? null} />
+                                <PcieLaneRow iou={iouB} pcieFaults={faults.pcieFaults} />
+                              </div>
                             </div>
                             <div style={{
                               fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
