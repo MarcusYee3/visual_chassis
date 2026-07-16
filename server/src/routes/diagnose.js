@@ -625,14 +625,20 @@ router.get('/', async (req, res) => {
     // forces that fallthrough regardless of cache state, for pulling the full step-by-step ILOM
     // trace on a SN that would otherwise short-circuit here.
     //
-    // If mfg-collector reports a failing check with no targeted flow mapped for it, that's not a
-    // reason to skip diagnostics entirely — it just means there's no dedicated script for it. The
-    // generic ILOM chain (Open_Problems -> fmadm -> hwdiag -> every targeted check) still runs
-    // below and might catch it; the notice is carried forward and merged into that chain's
-    // genericErrors so it still surfaces to the user instead of getting silently dropped.
-    let mfgCollectorNotice = null;
+    // Whenever nothing above matched a specific targeted check — no mfg-collector record at all,
+    // a record that's failing a check the ILOM chain happens to cover anyway, or a failing check
+    // with no dedicated script yet — that's not a reason to skip diagnostics, but the user should
+    // still be told the default/generic ILOM chain (Open_Problems -> fmadm -> hwdiag -> every
+    // targeted check) is what's running and why, instead of it looking identical to a real
+    // targeted-check match. The notice is carried forward and merged into that chain's
+    // genericErrors (and reflected in the response's `source`) so it reaches the UI, not just
+    // this server's console.
+    let defaultFlowNotice = null;
+    let defaultFlowSourceTag = null;
     if (skipCollector) {
       console.log(`[diagnose] skipCollector set, bypassing mfg-collector cache for ${serialNumber}`);
+      defaultFlowNotice = `skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain`;
+      defaultFlowSourceTag = 'skipCollector';
     } else {
       const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
       console.log('[diagnose] mfg-collector cache lookup:', JSON.stringify(collectorStatus), '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
@@ -644,12 +650,25 @@ router.get('/', async (req, res) => {
           const { faults, raw } = await targetedCheck(serialNumber);
           return res.json({ faults, raw, source: `mfg-collector -> ${collectorStatus.checkName}` });
         }
-        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} but no targeted flow is mapped for it — running the generic ILOM diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check) instead of skipping diagnostics`);
-        mfgCollectorNotice =
+        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} but no targeted flow is mapped for it — running the default ILOM diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check) instead of skipping diagnostics`);
+        defaultFlowNotice =
           `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
           `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
-          `no targeted diagnostic flow yet for this check — ran the generic ILOM chain instead`;
+          `no targeted diagnostic flow yet for this check — running the default ILOM chain instead`;
+        defaultFlowSourceTag = 'no-targeted-flow';
+      } else if (collectorStatus?.failing && collectorStatus.ilomObservable) {
+        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} — ILOM-observable, running the default ILOM diagnostic chain to find it`);
+        defaultFlowNotice =
+          `mfg-collector: ${serialNumber} failing ${collectorStatus.checkNumber}_${collectorStatus.checkName} — ` +
+          `ILOM-observable, running the default ILOM diagnostic chain to find it`;
+        defaultFlowSourceTag = 'ilom-observable';
+      } else if (!collectorStatus) {
+        console.log(`[diagnose] no mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`);
+        defaultFlowNotice = `No mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`;
+        defaultFlowSourceTag = 'no-collector-record';
       }
+      // collectorStatus found and passing: a real match (mfg-collector confirms it's fine), not
+      // a "no match" case, so no notice — the default chain still runs same as always, silently.
     }
 
     // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
@@ -749,12 +768,12 @@ router.get('/', async (req, res) => {
     const mergedFaults = mergeFaults(
       openProblemsParsed.faults, fmadmParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
     );
-    if (mfgCollectorNotice) mergedFaults.genericErrors.unshift(mfgCollectorNotice);
+    if (defaultFlowNotice) mergedFaults.genericErrors.unshift(defaultFlowNotice);
     console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
     const parsed = {
       faults: mergedFaults,
       raw,
-      ...(mfgCollectorNotice ? { source: 'generic-ilom-chain (mfg-collector flagged, no targeted flow)' } : {}),
+      ...(defaultFlowSourceTag ? { source: `default-ilom-chain (${defaultFlowSourceTag})` } : {}),
     };
 
     res.json(parsed);
