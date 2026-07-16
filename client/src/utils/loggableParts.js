@@ -40,6 +40,10 @@ export function getLoggableParts(faults) {
     parts.push({ partId: `fan-${num}`, partLabel: `Fan ${num}` });
   });
 
+  (faults.pcieSwitchIds || []).forEach((num) => {
+    parts.push({ partId: `pcie-sw-${num}`, partLabel: `PCIE SW ${num}` });
+  });
+
   (faults.genericErrors || []).forEach((msg) => {
     parts.push({ partId: `generic-${hashString(msg)}`, partLabel: msg.length > 80 ? `${msg.slice(0, 80)}…` : msg });
   });

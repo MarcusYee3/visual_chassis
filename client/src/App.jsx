@@ -6,7 +6,7 @@ import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
 import { updateServer, diagnoseServer } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);

@@ -11,7 +11,7 @@ import FanModule from '../components/FanModule/FanModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
 
 const genericErrorStyle = {
   width: '100%',
@@ -61,30 +61,6 @@ const backLinkStyle = (colorKey = 'blue') => {
 
 const faultBorder = '1px solid #ff4444';
 const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
-
-// 8 PCIe switches sit under each IOU (per the /SYS/IOU<n>/PCIE<lane*100 + n> convention seen in
-// real ILOM fault output, e.g. /SYS/IOU10/PCIE1000 is IOU 10, lane 0) — render them left to
-// right, same chip shape/size as the IOU retimer modules, and highlight any that show up in
-// faults.pcieFaults for this IOU.
-function PcieSwitchRow({ iou, pcieFaults }) {
-  const iouFaults = (pcieFaults || []).filter((f) => f.iou === iou);
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px', marginTop: '4px', width: '100%' }}>
-      {Array.from({ length: 8 }, (_, lane) => {
-        const fault = iouFaults.find((f) => f.pcie % 100 === lane);
-        return (
-          <PCIeSwitch
-            key={lane}
-            id={`pcie-switch-iou${iou}-${lane}`}
-            label={`${lane + 1}`}
-            faulted={!!fault}
-            title={`IOU${iou} PCIe ${lane + 1}${fault ? ` — faulted${fault.probability != null ? ` (${fault.probability}%)` : ''}` : ''}`}
-          />
-        );
-      })}
-    </div>
-  );
-}
 
 // Real IOU numbers carrying a GXR3 retimer card (same 8 IOUs the OSFP boards use, 1,2,4,5,6,7,9,10
 // — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
@@ -227,13 +203,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                         return (
                           <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}
                             title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}>
-                            <div style={{ display: 'flex', alignItems: 'flex-start' }}>
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                                <PCIePort id={portA.id} name={portA.name} status={portA.status}
-                                  faulted={!!faultA} probability={faultA?.probability ?? null} />
-                                <PcieSwitchRow iou={iouA} pcieFaults={faults.pcieFaults} />
-                              </div>
-                              <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0, marginTop: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                              <PCIePort id={portA.id} name={portA.name} status={portA.status}
+                                faulted={!!faultA} probability={faultA?.probability ?? null} />
+                              <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0 }}>
                                 <div style={plugStyle} />
                                 <div style={{
                                   flex: 1, height: 0,
@@ -242,11 +215,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                                 }} />
                                 <div style={plugStyle} />
                               </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                                <PCIePort id={portB.id} name={portB.name} status={portB.status}
-                                  faulted={!!faultB} probability={faultB?.probability ?? null} />
-                                <PcieSwitchRow iou={iouB} pcieFaults={faults.pcieFaults} />
-                              </div>
+                              <PCIePort id={portB.id} name={portB.name} status={portB.status}
+                                faulted={!!faultB} probability={faultB?.probability ?? null} />
                             </div>
                             <div style={{
                               fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
@@ -341,11 +311,20 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               {/* Center: Retimer BD */}
               <div style={{ backgroundImage: 'radial-gradient(circle at 3.5px 3.5px, rgba(200,220,50,0.08) 0.6px, transparent 0.6px), repeating-linear-gradient(90deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 7px), linear-gradient(180deg, #22280f 0%, #161a08 100%)', backgroundSize: '7px 7px, 7px 7px, 100% 100%', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px', width: '100%' }}>
-                  {IOU_GXR3_NUMBERS.map((iou) => (
-                    <GXR3VRetimer key={iou} id={`retimer-${iou}`} name={`IOU ${iou} GXR3`}
-                      onClick={() => {}}
-                      faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
-                  ))}
+                  {IOU_GXR3_NUMBERS.map((iou, idx) => {
+                    const switchNum = idx + 1;
+                    const switchFaulted = (faults.pcieSwitchIds || []).includes(switchNum);
+                    return (
+                      <div key={iou} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        <GXR3VRetimer id={`retimer-${iou}`} name={`IOU ${iou} GXR3`}
+                          onClick={() => {}}
+                          faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
+                        <PCIeSwitch id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum}`}
+                          faulted={switchFaulted}
+                          title={`PCIE_SW${switchNum}${switchFaulted ? ' — FAILED' : ''}`} />
+                      </div>
+                    );
+                  })}
                 </div>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ ...fontStyle, fontSize: '9px', color: '#8a9a45' }}>8x GXR3V2</div>

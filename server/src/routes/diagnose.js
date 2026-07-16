@@ -91,11 +91,11 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
 // findings are combined, so a unit with e.g. both a fabric-test PCIe failure and a GXR3 firmware
 // failure shows both instead of only whichever tier ran first.
 function mergeFaults(...faultsList) {
-  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
-  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set() };
+  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set() };
 
   for (const f of faultsList) {
-    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults']) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds']) {
       for (const id of f[key] || []) {
         if (!seen[key].has(id)) { seen[key].add(id); merged[key].push(id); }
       }
@@ -119,6 +119,7 @@ function parseIlomProblems(output) {
     fanIds: [],
     genericErrors: [],
     cableFaults: [],
+    pcieSwitchIds: [],
   };
 
   const compSet = new Set();
@@ -215,7 +216,7 @@ function parseIlomProblems(output) {
 //   PS1    -  Present
 // Anything whose status isn't "Present" is treated as a fault.
 function parseHwdiagFanInfo(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
@@ -249,7 +250,7 @@ function parseHwdiagFanInfo(output) {
 // (/SYS/PS<n>/...), route it through the existing PSU highlighting; anything else becomes a
 // generic error message with no specific chassis component to highlight.
 function parseHwdiagTempGetAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -284,12 +285,11 @@ function parseHwdiagTempGetAll(output) {
 // report FAILED in this format — that's not N isolated bad parts, it's a systemic problem, so
 // instead of highlighting every retimer/GPU/SSD individually (noisy and actively misleading
 // about what's actually wrong), the whole chassis is flagged and a head node reseat is called
-// for. A partial failure (some links down, most passing) is treated normally, but this command's
-// "RetimerN" is a switch-relative index (1-8) with no fixed correspondence to a real IOU number
-// — confirmed there isn't one — so a failed retimer here is reported generically rather than
-// attributed to a specific retimer-<iou> id; cross-check with the UPDATE_GXR3_FW targeted check
-// (which reports by real IOU number) to find the actual card. GPU/SSD links don't have a
-// dedicated chassis element yet either, so they're also called out by number in a generic error.
+// for. A partial failure (some links down, most passing) is treated normally. The "SWITCH:
+// PCIE_SW<n>" / "PCIE_SW<n> ..." number is the physical PCIe switch itself — unlike the
+// Retimer/GPU/SSD numbers on each of its three lines (which are switch-relative and don't map
+// to a real IOU), PCIE_SW<n> is the actual faulted part, so a fault on any of a switch's three
+// lines is attributed to that PCIE_SW<n> as a whole in faults.pcieSwitchIds.
 //
 // Format B ("3U Flex" platform): a CPU-core/UPI-link/memory-controller/PCI-device report, with
 // PCIe devices identified by real /SYS/IOU<n>/PCIE<n> paths, e.g.:
@@ -302,12 +302,10 @@ function parseHwdiagTempGetAll(output) {
 // IOU numbers. No real-hardware evidence yet of what a systemic/all-failed case looks like in
 // this format, so the "reseat head node" heuristic only applies to format A for now.
 function parseHwdiagFabricTestAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
-  const failedRetimers = new Set();
-  const failedGpus = new Set();
-  const failedSsds = new Set();
+  const switchFailures = new Map(); // switch number -> [ 'Retimer8', 'GPU7', ... ] (which lines failed)
 
   const lineRe = /PCIE_SW(\d+)\s+(Retimer|GPU|SSD)(\d+)\s+.*?:\s*(PASSED|FAILED)\s*$/gim;
   let m;
@@ -315,24 +313,18 @@ function parseHwdiagFabricTestAll(output) {
   let failedCount = 0;
   while ((m = lineRe.exec(output)) !== null) {
     total++;
-    const [, , partType, partNumStr, status] = m;
+    const [, swNumStr, partType, partNumStr, status] = m;
     if (status.toUpperCase() !== 'FAILED') continue;
     failedCount++;
-    const n = parseInt(partNumStr, 10);
-    if (partType === 'Retimer') {
-      failedRetimers.add(n);
-      addComp('iob');
-    } else if (partType === 'GPU') {
-      failedGpus.add(n);
-      addComp('gpu');
-    } else if (partType === 'SSD') {
-      failedSsds.add(n);
-      addComp('iob');
-    }
+    const swNum = parseInt(swNumStr, 10);
+    if (!switchFailures.has(swNum)) switchFailures.set(swNum, []);
+    switchFailures.get(swNum).push(`${partType}${partNumStr}`);
+    addComp(partType === 'GPU' ? 'gpu' : 'iob');
   }
 
   if (total > 0 && failedCount === total) {
     faults.components = ['gbb', 'gpu', 'iob', 'psu', 'bmc', 'rot'];
+    faults.pcieSwitchIds = [...switchFailures.keys()].sort((a, b) => a - b);
     faults.genericErrors.push(
       `hwdiag system fabric test all: ALL ${total} fabric links failed (0/${total} passed) — this ` +
       `indicates a head node connectivity issue, not isolated component failures. Reseat the head node and retest.`
@@ -340,14 +332,11 @@ function parseHwdiagFabricTestAll(output) {
     return { faults, raw: output };
   }
 
-  if (failedRetimers.size > 0) {
-    faults.genericErrors.push(`hwdiag system fabric test all: Retimer(s) failed (switch-relative numbering, not IOU-mapped): ${[...failedRetimers].sort((a, b) => a - b).join(', ')} — cross-check with the UPDATE_GXR3_FW check for the actual IOU`);
-  }
-  if (failedGpus.size > 0) {
-    faults.genericErrors.push(`hwdiag system fabric test all: GPU link(s) failed: ${[...failedGpus].sort((a, b) => a - b).join(', ')}`);
-  }
-  if (failedSsds.size > 0) {
-    faults.genericErrors.push(`hwdiag system fabric test all: SSD link(s) failed: ${[...failedSsds].sort((a, b) => a - b).join(', ')}`);
+  if (switchFailures.size > 0) {
+    faults.pcieSwitchIds = [...switchFailures.keys()].sort((a, b) => a - b);
+    for (const [swNum, parts] of [...switchFailures.entries()].sort((a, b) => a[0] - b[0])) {
+      faults.genericErrors.push(`hwdiag system fabric test all: PCIE_SW${swNum} failed (${parts.join(', ')} link down)`);
+    }
   }
 
   // Format B pass — no-op if this output was actually format A (the regex just won't match).
@@ -381,7 +370,7 @@ const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
 const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
 
 function parseLionkingOSFPOutput(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
 
   if (!/Missing \/ Down Links/i.test(output) && /error|traceback|exception/i.test(output)) {
     faults.genericErrors.push(`lionking_OSFP.py did not complete normally: ${output.trim().slice(-500)}`);
@@ -422,7 +411,7 @@ async function runLionkingOSFPCheck(serialNumber) {
 // use), which is what the retimer UI is keyed by (retimer-<iou>) — unlike "hwdiag system fabric
 // test all"'s switch-relative RetimerN, there's no ambiguity here about which physical card failed.
 function parseGxr3FwUpdateCheck(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const retimerSeen = new Set();
