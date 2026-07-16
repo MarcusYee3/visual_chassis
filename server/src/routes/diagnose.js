@@ -644,12 +644,16 @@ router.get('/', async (req, res) => {
     // this server's console.
     let defaultFlowNotice = null;
     let defaultFlowSourceTag = null;
-    // The real CHECK_ILOM_FAULTS command flow does not include the OSFP loopback check
-    // (lionking_OSFP.py) or the GXR3 firmware check (gxr3_fw_update_check) — those only apply to
-    // VERIFY_OSFP_LINKS/UPDATE_GXR3_FW failures. So when the default chain is running because
-    // mfg-collector specifically flagged CHECK_ILOM_FAULTS, skip those two targeted checks in
-    // Step 3 below rather than running every targeted check unconditionally.
-    let excludedTargetedChecks = [];
+    // The real default/generic command flow (whatever reason landed us here — no mfg-collector
+    // record, a failing check the ILOM chain happens to cover, or a failing check with no
+    // dedicated script) never includes the OSFP loopback check (lionking_OSFP.py) or the GXR3
+    // firmware check (gxr3_fw_update_check) — those only ever run when specifically matched
+    // (mfg-collector flags VERIFY_OSFP_LINKS/UPDATE_GXR3_FW, which returns early above, or
+    // ?forceCheck=). Exclude them from Step 3's targeted-check loop unconditionally rather than
+    // only for one specific branch — an earlier version of this only excluded them when
+    // collectorStatus.checkName was exactly CHECK_ILOM_FAULTS, which left every other
+    // default-flow reason (e.g. no mfg-collector record at all) still sweeping them in.
+    const excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW'];
     if (skipCollector) {
       console.log(`[diagnose] skipCollector set, bypassing mfg-collector cache for ${serialNumber}`);
       defaultFlowNotice = `skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain`;
@@ -677,10 +681,6 @@ router.get('/', async (req, res) => {
           `mfg-collector: ${serialNumber} failing ${collectorStatus.checkNumber}_${collectorStatus.checkName} — ` +
           `ILOM-observable, running the default ILOM diagnostic chain to find it`;
         defaultFlowSourceTag = 'ilom-observable';
-        if (collectorStatus.checkName === 'CHECK_ILOM_FAULTS') {
-          console.log('[diagnose] CHECK_ILOM_FAULTS — skipping VERIFY_OSFP_LINKS/UPDATE_GXR3_FW targeted checks, they are not part of its real command flow');
-          excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW'];
-        }
       } else if (!collectorStatus) {
         console.log(`[diagnose] no mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`);
         defaultFlowNotice = `No mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`;
@@ -778,7 +778,7 @@ router.get('/', async (req, res) => {
     const targetedFaultsList = [];
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
       if (excludedTargetedChecks.includes(checkName)) {
-        console.log(`[diagnose] skipping targeted check ${checkName} for ${serialNumber} (excluded by ${defaultFlowSourceTag})`);
+        console.log(`[diagnose] skipping targeted check ${checkName} for ${serialNumber} — only runs on a specific mfg-collector match or ?forceCheck=, not as part of the default chain`);
         continue;
       }
       console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
