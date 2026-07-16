@@ -635,6 +635,13 @@ router.get('/', async (req, res) => {
     // through to the normal flow below, same as if this feature didn't exist. ?skipCollector=1
     // forces that fallthrough regardless of cache state, for pulling the full step-by-step ILOM
     // trace on a SN that would otherwise short-circuit here.
+    //
+    // If mfg-collector reports a failing check with no targeted flow mapped for it, that's not a
+    // reason to skip diagnostics entirely — it just means there's no dedicated script for it. The
+    // generic ILOM chain (Open_Problems -> fmadm -> hwdiag -> every targeted check) still runs
+    // below and might catch it; the notice is carried forward and merged into that chain's
+    // genericErrors so it still surfaces to the user instead of getting silently dropped.
+    let mfgCollectorNotice = null;
     if (skipCollector) {
       console.log(`[diagnose] skipCollector set, bypassing mfg-collector cache for ${serialNumber}`);
     } else {
@@ -648,16 +655,11 @@ router.get('/', async (req, res) => {
           const { faults, raw } = await targetedCheck(serialNumber);
           return res.json({ faults, raw, source: `mfg-collector -> ${collectorStatus.checkName}` });
         }
-        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} but no targeted flow is mapped for it — returning the generic notice and skipping the ILOM chain below`);
-        return res.json({
-          faults: { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [
-            `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
-            `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
-            `no targeted diagnostic flow yet for this check — skipped ILOM diagnostics`,
-          ], cableFaults: [] },
-          raw: collectorStatus.raw,
-          source: 'mfg-collector',
-        });
+        console.log(`[diagnose] mfg-collector reports ${collectorStatus.checkName} failing for ${serialNumber} but no targeted flow is mapped for it — running the generic ILOM diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check) instead of skipping diagnostics`);
+        mfgCollectorNotice =
+          `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
+          `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
+          `no targeted diagnostic flow yet for this check — ran the generic ILOM chain instead`;
       }
     }
 
@@ -758,8 +760,13 @@ router.get('/', async (req, res) => {
     const mergedFaults = mergeFaults(
       openProblemsParsed.faults, fmadmParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
     );
+    if (mfgCollectorNotice) mergedFaults.genericErrors.unshift(mfgCollectorNotice);
     console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
-    const parsed = { faults: mergedFaults, raw };
+    const parsed = {
+      faults: mergedFaults,
+      raw,
+      ...(mfgCollectorNotice ? { source: 'generic-ilom-chain (mfg-collector flagged, no targeted flow)' } : {}),
+    };
 
     res.json(parsed);
   } catch (err) {
