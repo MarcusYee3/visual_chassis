@@ -644,6 +644,12 @@ router.get('/', async (req, res) => {
     // this server's console.
     let defaultFlowNotice = null;
     let defaultFlowSourceTag = null;
+    // The real CHECK_ILOM_FAULTS command flow does not include the OSFP loopback check
+    // (lionking_OSFP.py) or the GXR3 firmware check (gxr3_fw_update_check) — those only apply to
+    // VERIFY_OSFP_LINKS/UPDATE_GXR3_FW failures. So when the default chain is running because
+    // mfg-collector specifically flagged CHECK_ILOM_FAULTS, skip those two targeted checks in
+    // Step 3 below rather than running every targeted check unconditionally.
+    let excludedTargetedChecks = [];
     if (skipCollector) {
       console.log(`[diagnose] skipCollector set, bypassing mfg-collector cache for ${serialNumber}`);
       defaultFlowNotice = `skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain`;
@@ -671,6 +677,10 @@ router.get('/', async (req, res) => {
           `mfg-collector: ${serialNumber} failing ${collectorStatus.checkNumber}_${collectorStatus.checkName} — ` +
           `ILOM-observable, running the default ILOM diagnostic chain to find it`;
         defaultFlowSourceTag = 'ilom-observable';
+        if (collectorStatus.checkName === 'CHECK_ILOM_FAULTS') {
+          console.log('[diagnose] CHECK_ILOM_FAULTS — skipping VERIFY_OSFP_LINKS/UPDATE_GXR3_FW targeted checks, they are not part of its real command flow');
+          excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW'];
+        }
       } else if (!collectorStatus) {
         console.log(`[diagnose] no mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`);
         defaultFlowNotice = `No mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`;
@@ -767,6 +777,10 @@ router.get('/', async (req, res) => {
     let raw = `${ilomOut}\n${fmadmOut}\n${hwdiagOut}`;
     const targetedFaultsList = [];
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+      if (excludedTargetedChecks.includes(checkName)) {
+        console.log(`[diagnose] skipping targeted check ${checkName} for ${serialNumber} (excluded by ${defaultFlowSourceTag})`);
+        continue;
+      }
       console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
       const result = await targetedCheck(serialNumber);
       raw += `\n${result.raw}`;
