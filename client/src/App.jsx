@@ -14,6 +14,7 @@ function App() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnoseError, setDiagnoseError] = useState('');
   const [diagnoseStatus, setDiagnoseStatus] = useState('');
+  const [flowNotice, setFlowNotice] = useState('');
   const [logPanel, setLogPanel] = useState(null); // { serialNumber, parts, checkName, source }
 
   const handleFormSubmit = async (formData) => {
@@ -25,10 +26,12 @@ function App() {
     setDiagnosing(true);
     setDiagnoseError('');
     setDiagnoseStatus('');
+    setFlowNotice('');
     try {
       const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
+      setFlowNotice(result.defaultFlowNotice || '');
       const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
       const via = result.source?.startsWith('mfg-collector') ? ' (via mfg-collector, ILOM not checked)' : '';
       setDiagnoseStatus(!hasFaults
@@ -56,6 +59,7 @@ function App() {
       </div>
       <ServerForm onSubmit={handleFormSubmit} />
       {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
+      {!diagnosing && flowNotice && <p style={{ color: '#aaa' }}>{flowNotice}</p>}
       {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}
       {diagnoseError && <p style={{ color: 'red' }}>{diagnoseError}</p>}
       {logPanel && (

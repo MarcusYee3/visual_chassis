@@ -791,11 +791,14 @@ router.get('/', async (req, res) => {
     const mergedFaults = mergeFaults(
       openProblemsParsed.faults, fmadmParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
     );
-    if (defaultFlowNotice) mergedFaults.genericErrors.unshift(defaultFlowNotice);
     console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
     const parsed = {
       faults: mergedFaults,
       raw,
+      // defaultFlowNotice is a status update ("running the default chain because X"), not a
+      // fault — it must stay out of genericErrors (which the UI renders as red fault banners)
+      // and be surfaced separately so the frontend can show it as a neutral status line instead.
+      ...(defaultFlowNotice ? { defaultFlowNotice } : {}),
       ...(defaultFlowSourceTag ? { source: `default-ilom-chain (${defaultFlowSourceTag})` } : {}),
     };
 
