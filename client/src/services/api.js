@@ -66,6 +66,15 @@ export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
   return handleResponse(response, 'Diagnose failed');
 };
 
+// Instant (cache-only, no ILOM SSH) read of what diagnoseServer will do for this SN — lets the
+// caller show an accurate status (e.g. "No mfg-collector record found...") while the real,
+// much slower diagnose request is still in flight, instead of a generic loading message.
+export const precheckDiagnose = async (serverId, serialNumber) => {
+  const params = new URLSearchParams({ serialNumber });
+  const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose/precheck?${params}`);
+  return handleResponse(response, 'Precheck failed');
+};
+
 export const checkPartFailure = async (serialNumber, partId) => {
   const params = new URLSearchParams({ serialNumber, partId });
   const response = await fetch(`${API_BASE}/part-failures?${params}`);

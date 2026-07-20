@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
-import { updateServer, diagnoseServer } from './services/api';
+import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
@@ -15,6 +15,7 @@ function App() {
   const [diagnoseError, setDiagnoseError] = useState('');
   const [diagnoseStatus, setDiagnoseStatus] = useState('');
   const [flowNotice, setFlowNotice] = useState('');
+  const [loadingNotice, setLoadingNotice] = useState('');
   const [logPanel, setLogPanel] = useState(null); // { serialNumber, parts, checkName, source }
 
   const handleFormSubmit = async (formData) => {
@@ -27,6 +28,22 @@ function App() {
     setDiagnoseError('');
     setDiagnoseStatus('');
     setFlowNotice('');
+    setLoadingNotice('');
+
+    // The real diagnose request takes tens of seconds (ILOM SSH round-trips); precheck is a
+    // near-instant, cache-only read of the same mfg-collector decision it's about to make, so the
+    // loading state can show something specific (e.g. "No mfg-collector record found...") in
+    // place of a generic "Running diagnostics…" the whole time. Best-effort — if it fails for any
+    // reason, just fall back to the generic message rather than blocking the real request on it.
+    try {
+      const precheck = await precheckDiagnose('server-1', formData.sn);
+      setLoadingNotice(precheck.targetedCheckName
+        ? `Running targeted check: ${precheck.targetedCheckName}…`
+        : (precheck.notice || 'Running diagnostics…'));
+    } catch {
+      setLoadingNotice('Running diagnostics…');
+    }
+
     try {
       const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
       const f = result.faults ?? EMPTY_FAULTS;
@@ -58,7 +75,7 @@ function App() {
         </Link>
       </div>
       <ServerForm onSubmit={handleFormSubmit} />
-      {diagnosing && <p style={{ color: '#aaa' }}>Running diagnostics…</p>}
+      {diagnosing && <p style={{ color: '#aaa' }}>{loadingNotice || 'Running diagnostics…'}</p>}
       {!diagnosing && flowNotice && <p style={{ color: '#aaa' }}>{flowNotice}</p>}
       {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}
       {diagnoseError && <p style={{ color: 'red' }}>{diagnoseError}</p>}
