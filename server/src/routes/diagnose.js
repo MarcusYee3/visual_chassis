@@ -463,12 +463,80 @@ async function runGxr3FwUpdateCheck(serialNumber) {
   return result;
 }
 
+// hwdiag power get amps all / hwdiag power get volts all haven't been captured on real hardware
+// yet — following the existing "/SYS/PS<n>/..." sensor-line convention used by "hwdiag temp get
+// all" (e.g. "/SYS/PS1/T_OUT : 43.00 deg C"), this assumes lines look like
+// "/SYS/PS<n>/... : <value> A" or "/SYS/PS<n>/... : <value> V". Only PS0/PS1 are checked, per the
+// specific POWER_ON flow this backs (see runPowerOnCheck) — a PSU reading exactly 0 for either
+// amps or volts means it isn't actually delivering power, even if "hwdiag fan info" still reports
+// it "Present". Adjust the regex once real captured output confirms the exact line shape.
+function parseHwdiagPowerFaults(output) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const psuSeen = new Set();
+
+  const re = /\/SYS\/PS([01])\b[^\r\n:]*:\s*([\d.]+)\s*(A|V)\b/gim;
+  let m;
+  while ((m = re.exec(output)) !== null) {
+    const [, psuNumStr, valueStr, unit] = m;
+    if (parseFloat(valueStr) !== 0) continue;
+    const psuNum = parseInt(psuNumStr, 10);
+    const id = `psu-port-${psuNum + 1}`;
+    if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
+    addComp('psu');
+    faults.genericErrors.push(`POWER_ON check: /SYS/PS${psuNum} reporting 0 ${unit} — not delivering power`);
+  }
+
+  return { faults, raw: output };
+}
+
+// Targeted flow for a POWER_ON-class failure (e.g. the HOST_POWER_ON_PRETEST stage seen in
+// mfg-collector/Jira tickets): eve_ip -> SSH into the ILOM -> /SP/diag/shell -> "hwdiag power get
+// amps all" -> "hwdiag power get volts all", then flag PS0/PS1 if either reports 0. Unlike
+// lionking_OSFP.py/GXR3_update_check (external scripts run locally), this one drives the ILOM
+// session directly, the same way the default chain's own hwdiag commands do.
+async function runPowerOnCheck(serialNumber) {
+  console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> hwdiag power get amps/volts all`);
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+
+  const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+  const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
+  if (!ilomRowMatch) {
+    return { faults: { ...emptyFaults, genericErrors: [`POWER_ON check: no ILOM interface found for ${serialNumber} in eve_ip output`] }, raw: eveOut };
+  }
+  const [, ilomIp, ilomStatus] = ilomRowMatch;
+  if (!/^up$/i.test(ilomStatus)) {
+    return {
+      faults: { ...emptyFaults, genericErrors: [`POWER_ON check: ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} — cannot check power rails`] },
+      raw: eveOut,
+    };
+  }
+
+  const ilomUser = process.env.ILOM_USER || 'root';
+  const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
+
+  const powerOut = await runIlomSession([
+    { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+    { line: 'hwdiag power get amps all', delayAfterMs: 8000 },
+    { line: 'hwdiag power get volts all', delayAfterMs: 8000 },
+    { line: 'exit', delayAfterMs: 1500 },
+    { line: 'exit', delayAfterMs: 1500 },
+  ], ilomIp, ilomUser, ilomPassword, 45000);
+  console.log('[diagnose] POWER_ON check raw output:\n', powerOut);
+
+  const result = parseHwdiagPowerFaults(powerOut);
+  console.log('[diagnose] POWER_ON check parsed faults:', JSON.stringify(result.faults));
+  return { faults: result.faults, raw: `${eveOut}\n${powerOut}` };
+}
+
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
 // its specific command/script and output format are known, instead of falling back to the
 // generic "not ILOM-observable" message below.
 const MFG_COLLECTOR_TARGETED_CHECKS = {
   VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
   UPDATE_GXR3_FW: runGxr3FwUpdateCheck,
+  CHECK_POWER_ON: runPowerOnCheck,
 };
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
@@ -731,6 +799,13 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
+  // "POWER_ON" (e.g. the HOST_POWER_ON_PRETEST stage) doesn't fit the numbered <N>_<CHECKNAME>
+  // shape extractJiraCheckCodes captures, so it needs its own direct text scan across both the
+  // summary and the ticket's comments, rather than relying on checkCodes matching below.
+  if (/POWER_ON/i.test(info.summary) || /POWER_ON/i.test(info.commentsText)) {
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON' };
+  }
+
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
     return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName };
@@ -898,14 +973,15 @@ router.get('/', async (req, res) => {
 
     // The real default/generic command flow (whatever reason landed us here — no mfg-collector
     // record, a failing check the ILOM chain happens to cover, or a failing check with no
-    // dedicated script) never includes the OSFP loopback check (lionking_OSFP.py) or the GXR3
-    // firmware check (gxr3_fw_update_check) — those only ever run when specifically matched
-    // (mfg-collector flags VERIFY_OSFP_LINKS/UPDATE_GXR3_FW, handled by targetedCheckName above,
-    // or ?forceCheck=). Exclude them from Step 3's targeted-check loop unconditionally rather than
+    // dedicated script) never includes the OSFP loopback check (lionking_OSFP.py), the GXR3
+    // firmware check (gxr3_fw_update_check), or the POWER_ON power-rail check (runPowerOnCheck)
+    // — those only ever run when specifically matched (mfg-collector flags VERIFY_OSFP_LINKS/
+    // UPDATE_GXR3_FW, a Jira ticket mentions POWER_ON, handled by targetedCheckName above, or
+    // ?forceCheck=). Exclude them from Step 3's targeted-check loop unconditionally rather than
     // only for one specific branch — an earlier version of this only excluded them when
     // collectorStatus.checkName was exactly CHECK_ILOM_FAULTS, which left every other
     // default-flow reason (e.g. no mfg-collector record at all) still sweeping them in.
-    const excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW'];
+    const excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW', 'CHECK_POWER_ON'];
 
     // Step 1: check ILOM status via eve_ip unconditionally — even when ilomIpParam was already
     // supplied (e.g. by /validate-sn, whose own ILOM regex only checks that an ILOM row exists,
