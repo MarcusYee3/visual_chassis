@@ -609,7 +609,7 @@ setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 // diagnostics…" placeholder, without waiting for the whole chain to finish.
 function describeDefaultFlow(serialNumber, skipCollector) {
   if (skipCollector) {
-    return { notice: 'skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain', sourceTag: 'skipCollector', targetedCheckName: null };
+    return { notice: 'skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain…', sourceTag: 'skipCollector', targetedCheckName: null };
   }
 
   const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
@@ -622,7 +622,7 @@ function describeDefaultFlow(serialNumber, skipCollector) {
     return {
       notice: `mfg-collector: ${serialNumber} failing ${collectorStatus.stage || collectorStatus.board} — ` +
         `${collectorStatus.checkNumber}_${collectorStatus.checkName} (${collectorStatus.duration}), ` +
-        `no targeted diagnostic flow yet for this check — running the default ILOM chain instead`,
+        `no targeted diagnostic flow yet for this check — running the default ILOM chain instead…`,
       sourceTag: 'no-targeted-flow',
       targetedCheckName: null,
     };
@@ -630,14 +630,14 @@ function describeDefaultFlow(serialNumber, skipCollector) {
   if (collectorStatus?.failing && collectorStatus.ilomObservable) {
     return {
       notice: `mfg-collector: ${serialNumber} failing ${collectorStatus.checkNumber}_${collectorStatus.checkName} — ` +
-        `ILOM-observable, running the default ILOM diagnostic chain to find it`,
+        `ILOM-observable, running the default ILOM diagnostic chain to find it…`,
       sourceTag: 'ilom-observable',
       targetedCheckName: null,
     };
   }
   if (!collectorStatus) {
     return {
-      notice: `No mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain`,
+      notice: `No mfg-collector record found for ${serialNumber} — running the default ILOM diagnostic chain…`,
       sourceTag: 'no-collector-record',
       targetedCheckName: null,
     };
@@ -729,17 +729,24 @@ router.get('/', async (req, res) => {
     // default-flow reason (e.g. no mfg-collector record at all) still sweeping them in.
     const excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW'];
 
-    // Step 1: use ILOM IP from validation if provided, otherwise run eve_ip
-    let ilomIp = ilomIpParam;
-    if (!ilomIp) {
-      const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-      const ilomMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+up/im);
-      if (!ilomMatch) {
-        return res.status(400).json({ error: `ILOM not found or not up: ${eveOut.trim()}` });
-      }
-      ilomIp = ilomMatch[1];
+    // Step 1: check ILOM status via eve_ip unconditionally — even when ilomIpParam was already
+    // supplied (e.g. by /validate-sn, whose own ILOM regex only checks that an ILOM row exists,
+    // not that its status is "up" — see server/src/routes/validateSn.js). Skipping this check
+    // whenever an IP was already known used to mean a down ILOM never got flagged here at all:
+    // the SSH session below would simply fail to connect, but connection-refused/unreachable
+    // text doesn't match any fault pattern, so parseIlomProblems returned zero faults and the
+    // user saw a misleading "No open problems detected." instead of being told the ILOM is down.
+    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+    const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
+    if (!ilomRowMatch) {
+      return res.status(400).json({ error: `No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}` });
     }
-    console.log('[diagnose] ILOM IP:', ilomIp);
+    const [, eveIlomIp, ilomStatus] = ilomRowMatch;
+    if (!/^up$/i.test(ilomStatus)) {
+      return res.status(400).json({ error: `ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} (IP ${eveIlomIp}) by eve_ip — cannot run diagnostics until it is back up` });
+    }
+    const ilomIp = ilomIpParam || eveIlomIp;
+    console.log('[diagnose] ILOM IP:', ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
 
     // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
     // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang
