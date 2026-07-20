@@ -648,12 +648,14 @@ function extractJiraCheckCodes(summary) {
 //   hwdiag_io_cables -> Cable#13 in system:
 //   PCIe Data Cable#13: IOU Bay: 3, IOU Module: PCIE_HH
 //   Check Result: FAIL
-// This app has no live ILOM session that runs "hwdiag io config" yet — this shows up instead
-// embedded in Jira repair tickets, where a technician pastes their diag-shell session into a
-// comment (confirmed against a real ticket, MFGS-557044, 2026-07-20, where cables #13 and #14
-// were swapped between IOU bays). There's no dedicated chassis UI element for a specific IOU
-// PCIe/power cable yet, so each FAIL becomes a generic error naming the cable and the bay/module
-// mismatch; 'iob' is highlighted since these cables live on the IOB tray's retimer board.
+// Shared by two sources of this same output shape: the live default ILOM chain below now runs
+// "hwdiag io config" itself as the first command in its hwdiag session, and describeJiraFlow
+// (further down) parses it out of a technician's pasted diag-shell session in a Jira ticket
+// comment, for units already routed to repair before this app ran it live (confirmed against a
+// real ticket, MFGS-557044, 2026-07-20, where cables #13 and #14 were swapped between IOU bays).
+// There's no dedicated chassis UI element for a specific IOU PCIe/power cable yet, so each FAIL
+// becomes a generic error naming the cable and the bay/module mismatch; 'iob' is highlighted
+// since these cables live on the IOB tray's retimer board.
 function parseHwdiagIoCableFaults(text) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
@@ -960,7 +962,7 @@ router.get('/', async (req, res) => {
     // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
     // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
     // faulted, instead of only the ones genuinely at 0.00 deg C.
-    console.log('[diagnose] running fmadm faulty -a / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally');
+    console.log('[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally');
 
     const fmadmOut = await runIlomSession([
       { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
@@ -973,6 +975,13 @@ router.get('/', async (req, res) => {
 
     const hwdiagOut = await runIlomSession([
       { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+      // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI reference
+      // wiring vs. what's actually connected) is what catches a swapped IOU PCIe/power cable, the
+      // same class of fault previously only visible via a technician's pasted session in a Jira
+      // ticket (see parseHwdiagIoCableFaults). No real-hardware timing confirmation yet for this
+      // one, so 8000ms is a starting estimate — bump it if it turns out to get cut off the same
+      // way "hwdiag temp get all" did below before its delay was corrected.
+      { line: 'hwdiag io config', delayAfterMs: 8000 },
       { line: 'hwdiag fan info', delayAfterMs: 5000 },
       // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
       // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
@@ -986,9 +995,11 @@ router.get('/', async (req, res) => {
       { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
       { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
       { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-    ], ilomIp, ilomUser, ilomPassword, 75000);
+    ], ilomIp, ilomUser, ilomPassword, 85000);
     console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
+    const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
+    console.log('[diagnose] hwdiag io config parsed faults:', JSON.stringify(ioConfigParsed.faults));
     const fanParsed = parseHwdiagFanInfo(hwdiagOut);
     console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
     const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
@@ -1011,7 +1022,7 @@ router.get('/', async (req, res) => {
     }
 
     const mergedFaults = mergeFaults(
-      openProblemsParsed.faults, fmadmParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
+      openProblemsParsed.faults, fmadmParsed.faults, ioConfigParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
     );
     console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
     const parsed = {
