@@ -639,6 +639,41 @@ function extractJiraCheckCodes(summary) {
   return codes;
 }
 
+// hwdiag io config's internal hwdiag_io_cables cross-check (embedded in that diag-shell command's
+// own output, not a separate command run by this app) compares the wiring a Golden Image (GI)
+// reference config expects against what's actually connected, one ERROR block per mismatched
+// cable, e.g.:
+//   hwdiag_io_cables -> Cable#13 in GI:
+//   PCIe Data Cable#13: IOU Bay: -, IOU Module: Not Connected
+//   hwdiag_io_cables -> Cable#13 in system:
+//   PCIe Data Cable#13: IOU Bay: 3, IOU Module: PCIE_HH
+//   Check Result: FAIL
+// This app has no live ILOM session that runs "hwdiag io config" yet — this shows up instead
+// embedded in Jira repair tickets, where a technician pastes their diag-shell session into a
+// comment (confirmed against a real ticket, MFGS-557044, 2026-07-20, where cables #13 and #14
+// were swapped between IOU bays). There's no dedicated chassis UI element for a specific IOU
+// PCIe/power cable yet, so each FAIL becomes a generic error naming the cable and the bay/module
+// mismatch; 'iob' is highlighted since these cables live on the IOB tray's retimer board.
+function parseHwdiagIoCableFaults(text) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+
+  const blockRe = /Cable#(\d+) in GI:\s*[\r\n]+\s*PCIe Data Cable#\d+:\s*IOU Bay:\s*(\S+),\s*IOU Module:\s*([^\r\n]+?)\s*[\r\n]+\s*hwdiag_io_cables\s*->\s*Cable#\d+ in system:\s*[\r\n]+\s*PCIe Data Cable#\d+:\s*IOU Bay:\s*(\S+),\s*IOU Module:\s*([^\r\n]+?)\s*[\r\n]+\s*Check Result:\s*(PASS|FAIL)/gi;
+  let m;
+  while ((m = blockRe.exec(text)) !== null) {
+    const [, cableNum, giBay, giModule, sysBay, sysModule, result] = m;
+    if (result.toUpperCase() !== 'FAIL') continue;
+    faults.genericErrors.push(
+      `hwdiag_io_cables: Cable#${cableNum} mismatch — expected IOU Bay ${giBay} (${giModule.trim()}), ` +
+      `found IOU Bay ${sysBay} (${sysModule.trim()}) in system — likely swapped with another cable`
+    );
+    addComp('iob');
+  }
+
+  return { faults, raw: text };
+}
+
 async function fetchJiraCheckInfo(jiraLink) {
   if (!JIRA_ISSUE_URL_RE.test(jiraLink)) {
     throw new Error(`Jira link must look like https://jira.synnex.com/rest/api/2/issue/<key-or-id> — got: ${jiraLink}`);
@@ -647,16 +682,28 @@ async function fetchJiraCheckInfo(jiraLink) {
   if (!res.ok) throw new Error(`Jira returned HTTP ${res.status}`);
   const data = await res.json();
   const summary = data?.fields?.summary || '';
-  return { key: data.key || jiraLink, summary, checkCodes: extractJiraCheckCodes(summary) };
+  // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
+  // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
+  // comment body so parseHwdiagIoCableFaults can scan across all of them regardless of which
+  // comment it was pasted into.
+  const commentsText = (data?.fields?.comment?.comments || []).map((c) => c.body || '').join('\n\n');
+  return {
+    key: data.key || jiraLink,
+    summary,
+    checkCodes: extractJiraCheckCodes(summary),
+    commentsText,
+    cableFaults: parseHwdiagIoCableFaults(commentsText).faults,
+  };
 }
 
 // Returns null if no jiraLink was given, or if fetching/parsing it failed for any reason — in
 // both cases the caller falls through to the normal mfg-collector-cache-based describeDefaultFlow
 // below, same as if this feature didn't exist. Otherwise returns the same {notice, sourceTag,
-// targetedCheckName} shape describeDefaultFlow produces, so both GET /precheck and the main GET /
-// handler can treat a Jira-derived decision identically to a mfg-collector one, just sourced from
-// a higher-priority place (a specific repair ticket rather than the live JBOG test table, which
-// only ever covers the small subset of units currently mid-manufacturing-test).
+// targetedCheckName} shape describeDefaultFlow produces (plus an optional resolvedFaults/
+// resolvedRaw pair — see below), so both GET /precheck and the main GET / handler can treat a
+// Jira-derived decision identically to a mfg-collector one, just sourced from a higher-priority
+// place (a specific repair ticket rather than the live JBOG test table, which only ever covers
+// the small subset of units currently mid-manufacturing-test).
 async function describeJiraFlow(jiraLink) {
   if (!jiraLink) return null;
   let info;
@@ -665,6 +712,21 @@ async function describeJiraFlow(jiraLink) {
   } catch (err) {
     console.warn('[diagnose] Jira link fetch/parse failed, falling back to mfg-collector:', err.message);
     return null;
+  }
+
+  // A technician's pasted diag-shell session already contains the actual fault (e.g. the swapped
+  // cable Cable#13/#14 mismatch) — that's a completed diagnosis, not a hint to go run more checks,
+  // so this takes priority even over a targeted-check match below: resolvedFaults tells the main
+  // handler to return it directly instead of opening any ILOM session at all.
+  const hasTicketFaults = info.cableFaults.genericErrors.length > 0;
+  if (hasTicketFaults) {
+    return {
+      notice: `Jira ${info.key}: fault(s) already documented in the ticket's comments — using them directly, skipping the ILOM chain…`,
+      sourceTag: `jira ${info.key} (parsed from ticket comments)`,
+      targetedCheckName: null,
+      resolvedFaults: info.cableFaults,
+      resolvedRaw: info.commentsText,
+    };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
@@ -764,8 +826,10 @@ router.get('/precheck', async (req, res) => {
     return res.json({ notice: null, sourceTag: `forced -> ${forceCheck}`, targetedCheckName: forceCheck });
   }
 
-  const jiraFlow = await describeJiraFlow(jiraLink);
-  res.json(jiraFlow || describeDefaultFlow(serialNumber, skipCollector));
+  const flow = (await describeJiraFlow(jiraLink)) || describeDefaultFlow(serialNumber, skipCollector);
+  // resolvedFaults/resolvedRaw (the Jira-ticket-comments case) aren't needed here — precheck only
+  // reports status text, the real GET / below is what actually returns faults to the client.
+  res.json({ notice: flow.notice, sourceTag: flow.sourceTag, targetedCheckName: flow.targetedCheckName });
 });
 
 router.get('/', async (req, res) => {
@@ -816,7 +880,13 @@ router.get('/', async (req, res) => {
     // show it immediately instead of only after this whole request finishes.
     console.log('[diagnose] mfg-collector cache lookup for', serialNumber, '(cache last updated', mfgCollectorCacheUpdatedAt, ')', jiraLink ? `— jiraLink also supplied: ${jiraLink}` : '');
     const jiraFlow = await describeJiraFlow(jiraLink);
-    const { notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
+    const {
+      notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
+    } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
+    if (resolvedFaults) {
+      console.log(`[diagnose] ${defaultFlowSourceTag} — fault(s) already documented in the ticket's comments, using them directly instead of opening an ILOM session`);
+      return res.json({ faults: resolvedFaults, raw: resolvedRaw, source: defaultFlowSourceTag });
+    }
     if (targetedCheckName) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const { faults, raw } = await MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName](serialNumber);

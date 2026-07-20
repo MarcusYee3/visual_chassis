@@ -51,17 +51,19 @@ function App() {
       setFaults(f);
       setFlowNotice(result.defaultFlowNotice || '');
       const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
-      // A source containing " -> " (mfg-collector -> X, jira <KEY> -> X, forced -> X) means a
-      // specific check matched and ran directly — no ILOM SSH chain was opened for it.
-      const isTargetedSource = result.source?.includes(' -> ');
-      const via = isTargetedSource ? ` (via ${result.source.split(' -> ')[0]}, ILOM not checked)` : '';
+      // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
+      // short-circuit (a matched targeted check, a forced check, or faults already documented in
+      // a Jira ticket's comments) — the ILOM SSH chain was never opened for it.
+      const isTargetedSource = !!result.source && !result.source.startsWith('default-ilom-chain');
+      const isCheckMatch = result.source?.includes(' -> ');
+      const via = isTargetedSource ? ` (via ${isCheckMatch ? result.source.split(' -> ')[0] : result.source}, ILOM not checked)` : '';
       setDiagnoseStatus(!hasFaults
         ? 'No open problems detected.'
         : `Faults detected${via}: ${f.components.length > 0 ? f.components.join(', ') : 'see error below'}`);
 
       const parts = getLoggableParts(f);
       if (parts.length > 0) {
-        const checkName = isTargetedSource ? result.source.split(' -> ')[1] : undefined;
+        const checkName = isCheckMatch ? result.source.split(' -> ')[1] : undefined;
         setLogPanel({ serialNumber: formData.sn, parts, checkName, source: result.source });
       }
     } catch (e) {
