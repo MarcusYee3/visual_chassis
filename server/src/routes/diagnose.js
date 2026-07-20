@@ -463,29 +463,44 @@ async function runGxr3FwUpdateCheck(serialNumber) {
   return result;
 }
 
-// hwdiag power get amps all / hwdiag power get volts all haven't been captured on real hardware
-// yet — following the existing "/SYS/PS<n>/..." sensor-line convention used by "hwdiag temp get
-// all" (e.g. "/SYS/PS1/T_OUT : 43.00 deg C"), this assumes lines look like
-// "/SYS/PS<n>/... : <value> A" or "/SYS/PS<n>/... : <value> V". Only PS0/PS1 are checked, per the
-// specific POWER_ON flow this backs (see runPowerOnCheck) — a PSU reading exactly 0 for either
-// amps or volts means it isn't actually delivering power, even if "hwdiag fan info" still reports
-// it "Present". Adjust the regex once real captured output confirms the exact line shape.
+// hwdiag power get amps all / hwdiag power get volts all, confirmed against real hardware
+// (2629YW10FE, 2026-07-20). The two commands use different line shapes for the same PSU, neither
+// matching the "/SYS/PS<n>/..." convention used elsewhere in this file (e.g. "hwdiag temp get
+// all"'s "/SYS/PS1/T_OUT : 43.00 deg C") — no space before the unit, and no separator slash:
+//   hwdiag power get amps all:
+//     /SYS/PS0_INPUT                      :   1.47A
+//     /SYS/PS0_OUTPUT                     :  21.31A
+//   hwdiag power get volts all:
+//     /SYS/PS0                            :  12.12V
+// Only PS0/PS1 are checked, per the specific POWER_ON flow this backs (see runPowerOnCheck) — a
+// PSU reading exactly 0 for either amps or volts means it isn't actually delivering power, even
+// if "hwdiag fan info" still reports it "Present".
 function parseHwdiagPowerFaults(output) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
 
-  const re = /\/SYS\/PS([01])\b[^\r\n:]*:\s*([\d.]+)\s*(A|V)\b/gim;
-  let m;
-  while ((m = re.exec(output)) !== null) {
-    const [, psuNumStr, valueStr, unit] = m;
-    if (parseFloat(valueStr) !== 0) continue;
+  const flagPsu = (psuNumStr, valueStr, unit, resource) => {
+    if (parseFloat(valueStr) !== 0) return;
     const psuNum = parseInt(psuNumStr, 10);
     const id = `psu-port-${psuNum + 1}`;
     if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
     addComp('psu');
-    faults.genericErrors.push(`POWER_ON check: /SYS/PS${psuNum} reporting 0 ${unit} — not delivering power`);
+    faults.genericErrors.push(`POWER_ON check: ${resource} reporting 0${unit} — not delivering power`);
+  };
+
+  const ampsRe = /\/SYS\/PS([01])_(INPUT|OUTPUT)\s*:\s*([\d.]+)A/gi;
+  let m;
+  while ((m = ampsRe.exec(output)) !== null) {
+    const [, psuNumStr, ioLabel, valueStr] = m;
+    flagPsu(psuNumStr, valueStr, 'A', `/SYS/PS${psuNumStr}_${ioLabel}`);
+  }
+
+  const voltsRe = /\/SYS\/PS([01])\s*:\s*([\d.]+)V/gi;
+  while ((m = voltsRe.exec(output)) !== null) {
+    const [, psuNumStr, valueStr] = m;
+    flagPsu(psuNumStr, valueStr, 'V', `/SYS/PS${psuNumStr}`);
   }
 
   return { faults, raw: output };
