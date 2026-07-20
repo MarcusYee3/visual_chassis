@@ -36,30 +36,40 @@ const ServerForm = ({ onSubmit }) => {
 
     return (
         <form className={styles.form} onSubmit={handleEvent}>
-            <label className={styles.label}>
-                Serial Number
-                <input className={styles.input} type="text" name="sn" value={serverData.sn} onChange={handleChange} required disabled={validating} />
-            </label>
-            <label className={styles.label}>
-                Work Order
-                <input className={styles.input} type="text" name="wo" value={serverData.wo} onChange={handleChange} placeholder="Optional" disabled={validating} />
-            </label>
-            <label className={`${styles.label} ${styles.wideLabel}`}>
-                Jira API Link
-                <input
-                    className={`${styles.input} ${styles.wideInput}`}
-                    type="text"
-                    name="jiraLink"
-                    value={serverData.jiraLink}
-                    onChange={handleChange}
-                    placeholder="https://jira.synnex.com/rest/api/2/issue/..."
-                    disabled={validating}
-                />
-            </label>
-            {error && <p className={styles.error}>{error}</p>}
-            <button className={styles.button} type="submit" disabled={validating}>
-                {validating ? "Validating…" : "Submit"}
-            </button>
+            <div className={styles.header}>
+                <span className={styles.headerDot} />
+                <span className={styles.headerTitle}>Server Lookup</span>
+            </div>
+
+            <div className={styles.grid}>
+                <label className={`${styles.label} ${styles.colSn}`}>
+                    Serial Number
+                    <input className={styles.input} type="text" name="sn" value={serverData.sn} onChange={handleChange} required disabled={validating} />
+                </label>
+                <label className={`${styles.label} ${styles.colWo}`}>
+                    Work Order
+                    <input className={styles.input} type="text" name="wo" value={serverData.wo} onChange={handleChange} placeholder="Optional" disabled={validating} />
+                </label>
+                <label className={`${styles.label} ${styles.colJira}`}>
+                    Jira API Link
+                    <input
+                        className={styles.input}
+                        type="text"
+                        name="jiraLink"
+                        value={serverData.jiraLink}
+                        onChange={handleChange}
+                        placeholder="https://jira.synnex.com/rest/api/2/issue/..."
+                        disabled={validating}
+                    />
+                </label>
+            </div>
+
+            <div className={styles.footer}>
+                {error && <p className={styles.error}>{error}</p>}
+                <button className={styles.button} type="submit" disabled={validating}>
+                    {validating ? "Validating…" : "Submit"}
+                </button>
+            </div>
         </form>
     );
 };

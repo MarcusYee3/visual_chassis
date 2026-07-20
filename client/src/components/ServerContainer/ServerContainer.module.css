@@ -1,16 +1,25 @@
+/* Fixed at exactly the chassis's own width (not the whole decorated assembly) so that when a
+   parent flex container centers this box, the colored chassis body lands on the same center
+   line as other 740px-wide content elsewhere in the app (the form, the fault banners, etc.) —
+   the U-label legend and rack ears are pulled out via absolute positioning below so they hang
+   off the sides without affecting this box's width/centering. Previously they were laid out as
+   ordinary flex siblings, which added their width asymmetrically (both on the left) and visibly
+   shifted the chassis right of center. */
 .outer {
-  display: flex;
-  align-items: stretch;
+  position: relative;
+  width: 740px;
   filter: drop-shadow(0 8px 32px rgba(0, 0, 0, 0.6));
 }
 
 /* U-height legend (rack unit brackets, outside the chassis) */
 .uLabels {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(100% + 6px);
   width: 32px;
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  margin-right: 6px;
 }
 
 .uLabelsTopSpacer {
@@ -54,9 +63,13 @@
   color: #888;
 }
 
-/* Rack mounting ears */
+/* Rack mounting ears — absolutely positioned off the left/right edges of .outer's 740px box
+   (see .outer's comment above) rather than laid out as flex siblings that would widen it. */
 .rackEarLeft,
 .rackEarRight {
+  position: absolute;
+  top: 0;
+  bottom: 0;
   width: 24px;
   background: linear-gradient(180deg, #555 0%, #484848 50%, #505050 100%);
   border: 1px solid #3a3a3a;
@@ -65,14 +78,17 @@
   align-items: center;
   justify-content: space-around;
   padding: 20px 0;
+  box-sizing: border-box;
 }
 
 .rackEarLeft {
+  right: calc(100% + 6px + 32px);
   border-radius: 3px 0 0 3px;
   border-right: none;
 }
 
 .rackEarRight {
+  left: 100%;
   border-radius: 0 3px 3px 0;
   border-left: none;
 }
