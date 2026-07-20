@@ -769,7 +769,18 @@ async function fetchJiraCheckInfo(jiraLink) {
   if (!JIRA_ISSUE_URL_RE.test(jiraLink)) {
     throw new Error(`Jira link must look like https://jira.synnex.com/rest/api/2/issue/<key-or-id> — got: ${jiraLink}`);
   }
-  const res = await fetch(jiraLink, { signal: AbortSignal.timeout(15000) });
+  // jira.synnex.com requires auth (confirmed on real hardware: an unauthenticated request comes
+  // back HTTP 401) — a Personal Access Token from JIRA_API_TOKEN, sent as a Bearer token, same as
+  // Jira Data Center/Server 8.14+'s own PAT support. Never hardcode the token itself here; it must
+  // only ever come from the environment (server/.env, which is git-ignored).
+  const jiraToken = process.env.JIRA_API_TOKEN;
+  if (!jiraToken) {
+    throw new Error('JIRA_API_TOKEN not set — cannot authenticate to jira.synnex.com');
+  }
+  const res = await fetch(jiraLink, {
+    headers: { Authorization: `Bearer ${jiraToken}` },
+    signal: AbortSignal.timeout(15000),
+  });
   if (!res.ok) throw new Error(`Jira returned HTTP ${res.status}`);
   const data = await res.json();
   const summary = data?.fields?.summary || '';
