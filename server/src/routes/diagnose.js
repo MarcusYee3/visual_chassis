@@ -482,18 +482,28 @@ const MFG_COLLECTOR_TARGETED_CHECKS = {
 // those. Only CHECK_ILOM_FAULTS and CHECK_PSU_PRESENCE overlap with what the chain below
 // actually inspects, so those still fall through to the normal ILOM session flow.
 //
-// Measured against the real endpoint: the data page is ~600KB and takes ~45s to fully download
-// (confirmed with both curl and Node's fetch — this is the server being slow to render/flush
-// ~2200 rows, not a client bug). That's as long as the ILOM SSH chain this is meant to save time
-// on, so fetching it synchronously per diagnose request would often make things slower, not
-// faster. Instead, a background poller fetches+parses the whole table into an in-memory
-// SN -> status cache on an interval, and each /diagnose request just does an instant in-memory
-// lookup against whatever the cache currently holds.
+// Measured against the real endpoint: the data page was ~600KB / ~45s to fully download when this
+// was first measured (confirmed with both curl and Node's fetch — the server being slow to
+// render/flush ~2200 rows, not a client bug). That's as long as the ILOM SSH chain this is meant
+// to save time on, so fetching it synchronously per diagnose request would often make things
+// slower, not faster. Instead, a background poller fetches+parses the whole table into an
+// in-memory SN -> status cache on an interval, and each /diagnose request just does an instant
+// in-memory lookup against whatever the cache currently holds.
+//
+// The table only grows over time (it's an accumulating historical log, not a rolling window), so
+// a fixed timeout measured against an earlier row count eventually becomes too tight — confirmed
+// on real hardware: with the original 90s timeout, refreshMfgCollectorCache failed with "The
+// operation was aborted due to timeout" on *every* attempt, leaving mfgCollectorCacheUpdatedAt
+// permanently null and mfgCollectorCache a permanently empty Map. Every SN then looked like "not
+// in mfg-collector" — not because any given SN was actually missing from the table, but because
+// the table had never been loaded at all. 180s gives more headroom; see describeDefaultFlow below
+// for how a totally unpopulated cache is now reported distinctly from a genuine per-SN miss.
 const MFG_COLLECTOR_BASE = 'https://mfg-collector.hyvesolutions.org';
 const MFG_COLLECTOR_LOGIN_PAGE = `${MFG_COLLECTOR_BASE}/out/out.login.php`;
 const MFG_COLLECTOR_LOGIN_URL = `${MFG_COLLECTOR_BASE}/op/op.loginA.php`;
 const MFG_COLLECTOR_DATA_URL = `${MFG_COLLECTOR_BASE}/out/out.evelionking_all.php`;
 const MFG_COLLECTOR_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const MFG_COLLECTOR_FETCH_TIMEOUT_MS = 180 * 1000;
 const ILOM_OBSERVABLE_CHECKS = /CHECK_ILOM_FAULTS|CHECK_PSU_PRESENCE/i;
 
 let mfgCollectorCache = new Map(); // SN (uppercase) -> status object
@@ -577,9 +587,10 @@ function parseMfgCollectorTable(html) {
 async function refreshMfgCollectorCache() {
   if (mfgCollectorRefreshInFlight) return;
   mfgCollectorRefreshInFlight = true;
+  const startedAt = Date.now();
   try {
     const cookie = await mfgCollectorLogin();
-    const res = await fetch(MFG_COLLECTOR_DATA_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(90000) });
+    const res = await fetch(MFG_COLLECTOR_DATA_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(MFG_COLLECTOR_FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`mfg-collector returned HTTP ${res.status}`);
     const html = await res.text();
     if (/name=['"]userid['"]/i.test(html)) {
@@ -587,9 +598,13 @@ async function refreshMfgCollectorCache() {
     }
     mfgCollectorCache = parseMfgCollectorTable(html);
     mfgCollectorCacheUpdatedAt = new Date();
-    console.log(`[diagnose] mfg-collector cache refreshed: ${mfgCollectorCache.size} SNs, at ${mfgCollectorCacheUpdatedAt.toISOString()}`);
+    console.log(`[diagnose] mfg-collector cache refreshed: ${mfgCollectorCache.size} SNs, at ${mfgCollectorCacheUpdatedAt.toISOString()} (took ${Date.now() - startedAt}ms)`);
   } catch (err) {
-    console.warn('[diagnose] mfg-collector cache refresh failed, keeping previous cache:', err.message);
+    // If the cache has never once loaded successfully, mfgCollectorCacheUpdatedAt is still null —
+    // describeDefaultFlow below checks that explicitly so an unpopulated cache doesn't get
+    // reported to the user as "SN not found in mfg-collector" (a claim about the table's
+    // contents) when the real problem is that the table itself was never fetched.
+    console.warn(`[diagnose] mfg-collector cache refresh failed after ${Date.now() - startedAt}ms, keeping previous cache (${mfgCollectorCacheUpdatedAt ? `last good: ${mfgCollectorCacheUpdatedAt.toISOString()}` : 'never successfully loaded'}):`, err.message);
   } finally {
     mfgCollectorRefreshInFlight = false;
   }
@@ -610,6 +625,19 @@ setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 function describeDefaultFlow(serialNumber, skipCollector) {
   if (skipCollector) {
     return { notice: 'skipCollector requested — bypassing mfg-collector, running the default ILOM diagnostic chain…', sourceTag: 'skipCollector', targetedCheckName: null };
+  }
+
+  // mfgCollectorCacheUpdatedAt only ever gets set after a *successful* refresh — if it's still
+  // null, the cache has never loaded even once (confirmed on real hardware: a too-tight fetch
+  // timeout left it permanently empty). A cache miss in that state says nothing about whether
+  // serialNumber is actually in the real table, so it must not be reported as "not found" — that
+  // claims something specific about the table's contents that was never actually checked.
+  if (!mfgCollectorCacheUpdatedAt) {
+    return {
+      notice: `mfg-collector cache has not loaded yet (no successful refresh since server start) — running the default ILOM diagnostic chain without an mfg-collector check…`,
+      sourceTag: 'collector-unavailable',
+      targetedCheckName: null,
+    };
   }
 
   const collectorStatus = mfgCollectorCache.get(serialNumber.toUpperCase()) || null;
