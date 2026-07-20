@@ -3,13 +3,13 @@ import styles from "./Form.module.css";
 import { validateSerialNumber } from "../../services/api";
 
 const ServerForm = ({ onSubmit }) => {
-    const [serverData, setServerData] = useState({ sn: "", wo: "" });
+    const [serverData, setServerData] = useState({ sn: "", wo: "", jiraLink: "" });
     const [error, setError] = useState("");
     const [validating, setValidating] = useState(false);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
-        setServerData((prev) => ({ ...prev, [name]: name === "sn" ? value.trim() : value }));
+        setServerData((prev) => ({ ...prev, [name]: (name === "sn" || name === "jiraLink") ? value.trim() : value }));
         setError("");
     };
 
@@ -43,6 +43,18 @@ const ServerForm = ({ onSubmit }) => {
             <label className={styles.label}>
                 Work Order
                 <input className={styles.input} type="text" name="wo" value={serverData.wo} onChange={handleChange} placeholder="Optional" disabled={validating} />
+            </label>
+            <label className={`${styles.label} ${styles.wideLabel}`}>
+                Jira API Link
+                <input
+                    className={`${styles.input} ${styles.wideInput}`}
+                    type="text"
+                    name="jiraLink"
+                    value={serverData.jiraLink}
+                    onChange={handleChange}
+                    placeholder="https://jira.synnex.com/rest/api/2/issue/..."
+                    disabled={validating}
+                />
             </label>
             {error && <p className={styles.error}>{error}</p>}
             <button className={styles.button} type="submit" disabled={validating}>

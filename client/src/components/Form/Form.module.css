@@ -1,6 +1,7 @@
 .form {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 16px;
   padding: 20px 32px;
@@ -8,6 +9,15 @@
   border-radius: 4px;
   background: linear-gradient(180deg, #2a2a2e 0%, #222226 100%);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.wideLabel {
+  flex: 1 1 320px;
+}
+
+.wideInput {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .label {

@@ -59,9 +59,10 @@ export const validateSerialNumber = async (sn) => {
   return handleResponse(response, 'Validation request failed');
 };
 
-export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
+export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink) => {
   const params = new URLSearchParams({ serialNumber });
   if (ilomIp) params.set('ilomIp', ilomIp);
+  if (jiraLink) params.set('jiraLink', jiraLink);
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
   return handleResponse(response, 'Diagnose failed');
 };
@@ -69,8 +70,9 @@ export const diagnoseServer = async (serverId, serialNumber, ilomIp) => {
 // Instant (cache-only, no ILOM SSH) read of what diagnoseServer will do for this SN — lets the
 // caller show an accurate status (e.g. "No mfg-collector record found...") while the real,
 // much slower diagnose request is still in flight, instead of a generic loading message.
-export const precheckDiagnose = async (serverId, serialNumber) => {
+export const precheckDiagnose = async (serverId, serialNumber, jiraLink) => {
   const params = new URLSearchParams({ serialNumber });
+  if (jiraLink) params.set('jiraLink', jiraLink);
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose/precheck?${params}`);
   return handleResponse(response, 'Precheck failed');
 };

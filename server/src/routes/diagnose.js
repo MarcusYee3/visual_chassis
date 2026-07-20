@@ -616,6 +616,77 @@ async function refreshMfgCollectorCache() {
 refreshMfgCollectorCache();
 setInterval(refreshMfgCollectorCache, MFG_COLLECTOR_POLL_INTERVAL_MS);
 
+// Only a select few units are ever actually in JBOG testing (mfg-collector's table) at a given
+// time, so a Jira repair ticket referencing a specific SN's failing check(s) is often the *only*
+// place that information exists for a unit that's already moved past JBOG. When a jiraLink is
+// supplied, it takes priority over the mfg-collector cache below — see describeJiraFlow.
+//
+// Restricted to the exact Jira REST issue-fetch shape (scheme + host + path prefix) rather than
+// accepting any URL — fetching an arbitrary user-supplied URL server-side is an SSRF vector
+// (it would let a request reach internal hosts/ports the user couldn't otherwise reach directly).
+const JIRA_ISSUE_URL_RE = /^https:\/\/jira\.synnex\.com\/rest\/api\/2\/issue\/[A-Za-z0-9-]+\/?(?:\?.*)?$/;
+
+// Extracts every "<N>_<CHECKNAME>" style code from a Jira issue's summary line, e.g.
+// "EVE: 2629YW10GJ : TA.B5-EVE04 : LOC: 8 : 2_CHECK_IOU_POWER_CABLE-3_CHECK_PCIE_CABLE" ->
+// [{checkNumber:'2', checkName:'CHECK_IOU_POWER_CABLE'}, {checkNumber:'3', checkName:'CHECK_PCIE_CABLE'}]
+// — the same "<N>_<CHECKNAME>" convention mfg-collector's Status column uses (both are fed by the
+// same manufacturing check pipeline), confirmed against a real ticket (MFGS-557044, 2026-07-20).
+function extractJiraCheckCodes(summary) {
+  const codes = [];
+  const re = /(\d+)_([A-Z][A-Z0-9_]*)/g;
+  let m;
+  while ((m = re.exec(summary || '')) !== null) codes.push({ checkNumber: m[1], checkName: m[2] });
+  return codes;
+}
+
+async function fetchJiraCheckInfo(jiraLink) {
+  if (!JIRA_ISSUE_URL_RE.test(jiraLink)) {
+    throw new Error(`Jira link must look like https://jira.synnex.com/rest/api/2/issue/<key-or-id> — got: ${jiraLink}`);
+  }
+  const res = await fetch(jiraLink, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`Jira returned HTTP ${res.status}`);
+  const data = await res.json();
+  const summary = data?.fields?.summary || '';
+  return { key: data.key || jiraLink, summary, checkCodes: extractJiraCheckCodes(summary) };
+}
+
+// Returns null if no jiraLink was given, or if fetching/parsing it failed for any reason — in
+// both cases the caller falls through to the normal mfg-collector-cache-based describeDefaultFlow
+// below, same as if this feature didn't exist. Otherwise returns the same {notice, sourceTag,
+// targetedCheckName} shape describeDefaultFlow produces, so both GET /precheck and the main GET /
+// handler can treat a Jira-derived decision identically to a mfg-collector one, just sourced from
+// a higher-priority place (a specific repair ticket rather than the live JBOG test table, which
+// only ever covers the small subset of units currently mid-manufacturing-test).
+async function describeJiraFlow(jiraLink) {
+  if (!jiraLink) return null;
+  let info;
+  try {
+    info = await fetchJiraCheckInfo(jiraLink);
+  } catch (err) {
+    console.warn('[diagnose] Jira link fetch/parse failed, falling back to mfg-collector:', err.message);
+    return null;
+  }
+
+  const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
+  if (targetedMatch) {
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName };
+  }
+  if (info.checkCodes.length > 0) {
+    const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
+    return {
+      notice: `Jira ${info.key}: "${info.summary}" — ${codeList}, no targeted diagnostic flow yet for ` +
+        `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
+      sourceTag: 'jira-no-targeted-flow',
+      targetedCheckName: null,
+    };
+  }
+  return {
+    notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
+    sourceTag: 'jira-no-check-code',
+    targetedCheckName: null,
+  };
+}
+
 // Pure, synchronous (no I/O) read of the in-memory mfg-collector cache — the same decision the
 // real GET / handler below makes in its non-forceCheck branch, extracted so GET /precheck can
 // report it instantly. The full diagnose request takes tens of seconds (ILOM SSH round-trips);
@@ -675,11 +746,12 @@ function describeDefaultFlow(serialNumber, skipCollector) {
 }
 
 // Lets the client ask "what will GET / do for this SN?" before paying for the full request, so
-// the loading state can show an accurate status (mfg-collector match, or "no record found") in
-// place of a generic spinner message. Purely a read of already-cached state — no ILOM session, no
-// targeted-check script execution — so it resolves near-instantly regardless of what it reports.
-router.get('/precheck', (req, res) => {
-  const { serialNumber, skipCollector, forceCheck } = req.query;
+// the loading state can show an accurate status (Jira match, mfg-collector match, or "no record
+// found") in place of a generic spinner message. Mostly a read of already-cached state — no ILOM
+// session, no targeted-check script execution — so it resolves quickly regardless of what it
+// reports; the one exception is a supplied jiraLink, which costs one small, fast network fetch.
+router.get('/precheck', async (req, res) => {
+  const { serialNumber, skipCollector, forceCheck, jiraLink } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
     return res.status(400).json({ error: 'Invalid serial number format' });
@@ -692,11 +764,12 @@ router.get('/precheck', (req, res) => {
     return res.json({ notice: null, sourceTag: `forced -> ${forceCheck}`, targetedCheckName: forceCheck });
   }
 
-  res.json(describeDefaultFlow(serialNumber, skipCollector));
+  const jiraFlow = await describeJiraFlow(jiraLink);
+  res.json(jiraFlow || describeDefaultFlow(serialNumber, skipCollector));
 });
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -719,14 +792,18 @@ router.get('/', async (req, res) => {
       return res.json({ faults, raw, source: `forced -> ${forceCheck}` });
     }
 
-    // Step 0: check the mfg-collector cache (populated by the background poller above, not
-    // fetched live — the real page takes ~45s, too slow to pay per-request) before opening any
-    // ILOM SSH session. If it already knows this SN is failing a check the ILOM chain below
-    // can't see, report that directly instead of paying for a full SSH round-trip that won't
-    // find anything. A cache miss (not yet polled, or genuinely not in the table) just falls
-    // through to the normal flow below, same as if this feature didn't exist. ?skipCollector=1
-    // forces that fallthrough regardless of cache state, for pulling the full step-by-step ILOM
-    // trace on a SN that would otherwise short-circuit here.
+    // Step 0: check the Jira ticket (if supplied) first, then the mfg-collector cache (populated
+    // by the background poller above, not fetched live — the real page takes ~45s, too slow to
+    // pay per-request) before opening any ILOM SSH session. Jira takes priority when given —
+    // mfg-collector's live JBOG test table only ever covers the small subset of units currently
+    // mid-manufacturing-test, so a unit already routed to repair (like the one this feature was
+    // built for) is often only findable via its own Jira ticket, not the table. If it already
+    // knows this SN is failing a check the ILOM chain below can't see, report that directly
+    // instead of paying for a full SSH round-trip that won't find anything. A miss in both (no
+    // jiraLink, or a jiraLink whose fetch/parse failed, and no mfg-collector record either) just
+    // falls through to the normal flow below, same as if this feature didn't exist.
+    // ?skipCollector=1 forces that fallthrough for the mfg-collector cache specifically (it has no
+    // effect on a supplied jiraLink, which still takes priority when successfully fetched).
     //
     // Whenever nothing above matched a specific targeted check — no mfg-collector record at all,
     // a record that's failing a check the ILOM chain happens to cover anyway, or a failing check
@@ -737,12 +814,13 @@ router.get('/', async (req, res) => {
     // below) so the UI can show it — see also GET /precheck above, which reports the exact same
     // notice/sourceTag before this handler even opens an ILOM SSH session, letting the client
     // show it immediately instead of only after this whole request finishes.
-    console.log('[diagnose] mfg-collector cache lookup for', serialNumber, '(cache last updated', mfgCollectorCacheUpdatedAt, ')');
-    const { notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName } = describeDefaultFlow(serialNumber, skipCollector);
+    console.log('[diagnose] mfg-collector cache lookup for', serialNumber, '(cache last updated', mfgCollectorCacheUpdatedAt, ')', jiraLink ? `— jiraLink also supplied: ${jiraLink}` : '');
+    const jiraFlow = await describeJiraFlow(jiraLink);
+    const { notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
     if (targetedCheckName) {
-      console.log(`[diagnose] mfg-collector reports ${targetedCheckName} failing for ${serialNumber} — running its targeted check instead of the generic ILOM chain`);
+      console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const { faults, raw } = await MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName](serialNumber);
-      return res.json({ faults, raw, source: `mfg-collector -> ${targetedCheckName}` });
+      return res.json({ faults, raw, source: defaultFlowSourceTag });
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
 

@@ -31,12 +31,13 @@ function App() {
     setLoadingNotice('');
 
     // The real diagnose request takes tens of seconds (ILOM SSH round-trips); precheck is a
-    // near-instant, cache-only read of the same mfg-collector decision it's about to make, so the
-    // loading state can show something specific (e.g. "No mfg-collector record found...") in
-    // place of a generic "Running diagnostics…" the whole time. Best-effort — if it fails for any
-    // reason, just fall back to the generic message rather than blocking the real request on it.
+    // near-instant read of the same decision it's about to make (mfg-collector cache, or the
+    // supplied Jira ticket if given priority), so the loading state can show something specific
+    // (e.g. "No mfg-collector record found...") in place of a generic "Running diagnostics…" the
+    // whole time. Best-effort — if it fails for any reason, just fall back to the generic message
+    // rather than blocking the real request on it.
     try {
-      const precheck = await precheckDiagnose('server-1', formData.sn);
+      const precheck = await precheckDiagnose('server-1', formData.sn, formData.jiraLink);
       setLoadingNotice(precheck.targetedCheckName
         ? `Running targeted check: ${precheck.targetedCheckName}…`
         : (precheck.notice || 'Running diagnostics…'));
@@ -45,19 +46,22 @@ function App() {
     }
 
     try {
-      const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp);
+      const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink);
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
       setFlowNotice(result.defaultFlowNotice || '');
       const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
-      const via = result.source?.startsWith('mfg-collector') ? ' (via mfg-collector, ILOM not checked)' : '';
+      // A source containing " -> " (mfg-collector -> X, jira <KEY> -> X, forced -> X) means a
+      // specific check matched and ran directly — no ILOM SSH chain was opened for it.
+      const isTargetedSource = result.source?.includes(' -> ');
+      const via = isTargetedSource ? ` (via ${result.source.split(' -> ')[0]}, ILOM not checked)` : '';
       setDiagnoseStatus(!hasFaults
         ? 'No open problems detected.'
         : `Faults detected${via}: ${f.components.length > 0 ? f.components.join(', ') : 'see error below'}`);
 
       const parts = getLoggableParts(f);
       if (parts.length > 0) {
-        const checkName = result.source?.startsWith('mfg-collector -> ') ? result.source.split(' -> ')[1] : undefined;
+        const checkName = isTargetedSource ? result.source.split(' -> ')[1] : undefined;
         setLogPanel({ serialNumber: formData.sn, parts, checkName, source: result.source });
       }
     } catch (e) {
