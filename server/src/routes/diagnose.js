@@ -744,6 +744,27 @@ function parseHwdiagIoCableFaults(text) {
   return { faults, raw: text };
 }
 
+// This EVE BOT-generated ticket pipeline stores its machine-parseable failure detail in the
+// *description* field as Jira wiki-markup "*Label:* value" lines (one per line, blank-line
+// separated) — not as dedicated custom fields, e.g.:
+//   *Failed Testcase:* 11_POWER_ON
+//   *Failure Message:* Power on failed.
+// confirmed against a real ticket (MFGS-557103, 2026-07-20). Extracts every such pair into a Map
+// keyed by label so callers can look up "Failed Testcase"/"Failure Message" directly instead of
+// guessing at which of the ~700 customfield_XXXXX ids might hold them (most are unrelated and
+// null on any given ticket).
+function parseJiraDescriptionFields(description) {
+  const fields = new Map();
+  // The whitespace between ":*" and the value must stay on the same line ([ \t]*, not \s*) — a
+  // field with an empty value (e.g. "*Error Detail:* " followed by a blank line) previously let
+  // \s* swallow the newlines and bleed into the *next* label's line as if it were this field's
+  // value, corrupting whichever field happened to follow an empty one.
+  const re = /\*([^*\n]+):\*[ \t]*([^\n]*)/g;
+  let m;
+  while ((m = re.exec(description || '')) !== null) fields.set(m[1].trim(), m[2].trim());
+  return fields;
+}
+
 async function fetchJiraCheckInfo(jiraLink) {
   if (!JIRA_ISSUE_URL_RE.test(jiraLink)) {
     throw new Error(`Jira link must look like https://jira.synnex.com/rest/api/2/issue/<key-or-id> — got: ${jiraLink}`);
@@ -752,6 +773,9 @@ async function fetchJiraCheckInfo(jiraLink) {
   if (!res.ok) throw new Error(`Jira returned HTTP ${res.status}`);
   const data = await res.json();
   const summary = data?.fields?.summary || '';
+  const descriptionFields = parseJiraDescriptionFields(data?.fields?.description);
+  const failedTestcase = descriptionFields.get('Failed Testcase') || '';
+  const failureMessage = descriptionFields.get('Failure Message') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
   // comment body so parseHwdiagIoCableFaults can scan across all of them regardless of which
@@ -760,7 +784,11 @@ async function fetchJiraCheckInfo(jiraLink) {
   return {
     key: data.key || jiraLink,
     summary,
-    checkCodes: extractJiraCheckCodes(summary),
+    failedTestcase,
+    failureMessage,
+    // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
+    // alongside the summary, since some tickets only carry the code in one place or the other.
+    checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
     commentsText,
     cableFaults: parseHwdiagIoCableFaults(commentsText).faults,
   };
@@ -799,10 +827,12 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
-  // "POWER_ON" (e.g. the HOST_POWER_ON_PRETEST stage) doesn't fit the numbered <N>_<CHECKNAME>
-  // shape extractJiraCheckCodes captures, so it needs its own direct text scan across both the
-  // summary and the ticket's comments, rather than relying on checkCodes matching below.
-  if (/POWER_ON/i.test(info.summary) || /POWER_ON/i.test(info.commentsText)) {
+  // "POWER_ON" (e.g. a "Failed Testcase: 11_POWER_ON" description field, or the
+  // HOST_POWER_ON_PRETEST stage) is matched by exact checkName below when it fits the numbered
+  // <N>_<CHECKNAME> shape, but not every ticket phrases it that way — scan the summary, the
+  // description's Failed Testcase/Failure Message fields, and the comments directly so none of
+  // those shapes get missed.
+  if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
     return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON' };
   }
 
