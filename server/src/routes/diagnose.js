@@ -844,6 +844,7 @@ async function fetchJiraCheckInfo(jiraLink) {
   const descriptionFields = parseJiraDescriptionFields(data?.fields?.description);
   const failedTestcase = descriptionFields.get('Failed Testcase') || '';
   const failureMessage = descriptionFields.get('Failure Message') || '';
+  const model = descriptionFields.get('Model') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
   // comment body so parseHwdiagIoCableFaults can scan across all of them regardless of which
@@ -854,6 +855,7 @@ async function fetchJiraCheckInfo(jiraLink) {
     summary,
     failedTestcase,
     failureMessage,
+    model,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
@@ -880,6 +882,15 @@ async function describeJiraFlow(jiraLink) {
     return null;
   }
 
+  // The GBB Tray's IOU layout depends on chassis model, per the Jira ticket's own "Model"
+  // description field (e.g. "E5-2C.DENSE") — E5-2c/E6-2c chassis only carry IOU 3 and IOU 6 (no
+  // loopback-cable pairing between them, unlike the 8-IOU JBOG layout this app defaults to), so
+  // the frontend needs to know to swap in that reduced layout instead of the usual 4 cable-pair
+  // OSFP modules. Attached to every branch below (not just the default-chain one) since any of
+  // them can be the one that actually reaches the client.
+  const reducedIouLayout = /E[56]-2C\b/i.test(info.model);
+  const chassisModel = info.model || null;
+
   // A technician's pasted diag-shell session already contains the actual fault (e.g. the swapped
   // cable Cable#13/#14 mismatch) — that's a completed diagnosis, not a hint to go run more checks,
   // so this takes priority even over a targeted-check match below: resolvedFaults tells the main
@@ -892,6 +903,8 @@ async function describeJiraFlow(jiraLink) {
       targetedCheckName: null,
       resolvedFaults: info.cableFaults,
       resolvedRaw: info.commentsText,
+      chassisModel,
+      reducedIouLayout,
     };
   }
 
@@ -901,12 +914,12 @@ async function describeJiraFlow(jiraLink) {
   // description's Failed Testcase/Failure Message fields, and the comments directly so none of
   // those shapes get missed.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON' };
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, reducedIouLayout };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName };
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, reducedIouLayout };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -915,12 +928,16 @@ async function describeJiraFlow(jiraLink) {
         `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
       sourceTag: 'jira-no-targeted-flow',
       targetedCheckName: null,
+      chassisModel,
+      reducedIouLayout,
     };
   }
   return {
     notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
     sourceTag: 'jira-no-check-code',
     targetedCheckName: null,
+    chassisModel,
+    reducedIouLayout,
   };
 }
 
@@ -1057,15 +1074,18 @@ router.get('/', async (req, res) => {
     const jiraFlow = await describeJiraFlow(jiraLink);
     const {
       notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
+      // Only ever set by a Jira ticket's "Model" description field — describeDefaultFlow's
+      // mfg-collector-based branches have no model info, so these default to "no reduced layout".
+      chassisModel = null, reducedIouLayout = false,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
     if (resolvedFaults) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — fault(s) already documented in the ticket's comments, using them directly instead of opening an ILOM session`);
-      return res.json({ faults: resolvedFaults, raw: resolvedRaw, source: defaultFlowSourceTag });
+      return res.json({ faults: resolvedFaults, raw: resolvedRaw, source: defaultFlowSourceTag, chassisModel, reducedIouLayout });
     }
     if (targetedCheckName) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const { faults, raw } = await MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName](serialNumber);
-      return res.json({ faults, raw, source: defaultFlowSourceTag });
+      return res.json({ faults, raw, source: defaultFlowSourceTag, chassisModel, reducedIouLayout });
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
 
@@ -1207,6 +1227,8 @@ router.get('/', async (req, res) => {
       // and be surfaced separately so the frontend can show it as a neutral status line instead.
       ...(defaultFlowNotice ? { defaultFlowNotice } : {}),
       ...(defaultFlowSourceTag ? { source: `default-ilom-chain (${defaultFlowSourceTag})` } : {}),
+      chassisModel,
+      reducedIouLayout,
     };
 
     res.json(parsed);
