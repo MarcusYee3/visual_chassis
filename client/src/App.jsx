@@ -6,7 +6,7 @@ import NavMenu from './components/NavMenu/NavMenu';
 import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);

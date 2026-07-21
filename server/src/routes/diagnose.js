@@ -91,11 +91,11 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
 // findings are combined, so a unit with e.g. both a fabric-test PCIe failure and a GXR3 firmware
 // failure shows both instead of only whichever tier ran first.
 function mergeFaults(...faultsList) {
-  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
-  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set() };
+  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set(), dimmIds: new Set() };
 
   for (const f of faultsList) {
-    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds']) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']) {
       for (const id of f[key] || []) {
         if (!seen[key].has(id)) { seen[key].add(id); merged[key].push(id); }
       }
@@ -120,6 +120,7 @@ function parseIlomProblems(output) {
     genericErrors: [],
     cableFaults: [],
     pcieSwitchIds: [],
+    dimmIds: [],
   };
 
   const compSet = new Set();
@@ -130,6 +131,7 @@ function parseIlomProblems(output) {
   const retimerSeen = new Set();
   const e1sSeen = new Set();
   const fanSeen = new Set();
+  const dimmSeen = new Set();
 
   let m;
 
@@ -184,6 +186,17 @@ function parseIlomProblems(output) {
   if (/\/SYS\/IOB\b|IOB[\s_]?TRAY/i.test(output)) addComp('iob');
   if (/\/SYS\/GBB|\/SYS\/OSFP|class\s*=\s*PCIE\b/i.test(output)) addComp('gbb');
 
+  // DIMM faults — /SYS/MB/P<cpu>/D<slot> (confirmed against real "hwdiag system fabric test all"
+  // output, e.g. "/SYS/MB/P0/D6"). Only two CPUs (P0/P1), each with 16 DIMM slots (D0-D15) across
+  // 4 memory controllers of 4 DIMMs each, per the real captured "CPU N Memory Controller M"
+  // sections — see parseHwdiagFabricTestAll below for the PASSED/FAILED per-DIMM training result,
+  // this just catches a DIMM resource path named directly in Open_Problems/fmadm output.
+  const dimmRe = /\/SYS\/MB\/P(\d)\/D(\d+)/gi;
+  while ((m = dimmRe.exec(output)) !== null) {
+    add(faults.dimmIds, dimmSeen, `dimm-p${m[1]}-d${m[2]}`);
+    addComp('mb');
+  }
+
   // PCIe faults — two possible shapes depending on which ILOM command produced the output:
   //  (1) show /System/Open_Problems: inline "(Probability:N, UUID:x, Resource:y, ...)" per problem
   //  (2) fmadm faulty -a: one "Suspect N of M" block per fault, with Certainty + Resource/Location
@@ -225,7 +238,7 @@ function parseIlomProblems(output) {
 //   PS1    -  Present
 // Anything whose status isn't "Present" is treated as a fault.
 function parseHwdiagFanInfo(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
@@ -259,7 +272,7 @@ function parseHwdiagFanInfo(output) {
 // (/SYS/PS<n>/...), route it through the existing PSU highlighting; anything else becomes a
 // generic error message with no specific chassis component to highlight.
 function parseHwdiagTempGetAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -311,7 +324,7 @@ function parseHwdiagTempGetAll(output) {
 // IOU numbers. No real-hardware evidence yet of what a systemic/all-failed case looks like in
 // this format, so the "reseat head node" heuristic only applies to format A for now.
 function parseHwdiagFabricTestAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const switchFailures = new Map(); // switch number -> [ 'Retimer8', 'GPU7', ... ] (which lines failed)
@@ -360,6 +373,20 @@ function parseHwdiagFabricTestAll(output) {
     addComp('gbb');
   }
 
+  // DIMM training results, also format B only — one line per DIMM under each "CPU <p> Memory
+  // Controller <m>" section, e.g. "/SYS/MB/P0/D6          4400 MT/s              : PASSED".
+  const dimmSeen = new Set();
+  const dimmLineRe = /\/SYS\/MB\/P(\d)\/D(\d+)\s+.*?:\s*(PASSED|FAILED)\s*$/gim;
+  while ((m = dimmLineRe.exec(output)) !== null) {
+    const [, cpuStr, slotStr, status] = m;
+    if (status.toUpperCase() !== 'FAILED') continue;
+    const id = `dimm-p${cpuStr}-d${slotStr}`;
+    if (dimmSeen.has(id)) continue;
+    dimmSeen.add(id);
+    faults.dimmIds.push(id);
+    addComp('mb');
+  }
+
   return { faults, raw: output };
 }
 
@@ -379,7 +406,7 @@ const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
 const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
 
 function parseLionkingOSFPOutput(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
   if (!/Missing \/ Down Links/i.test(output) && /error|traceback|exception/i.test(output)) {
     faults.genericErrors.push(`lionking_OSFP.py did not complete normally: ${output.trim().slice(-500)}`);
@@ -420,7 +447,7 @@ async function runLionkingOSFPCheck(serialNumber) {
 // use), which is what the retimer UI is keyed by (retimer-<iou>) — unlike "hwdiag system fabric
 // test all"'s switch-relative RetimerN, there's no ambiguity here about which physical card failed.
 function parseGxr3FwUpdateCheck(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const retimerSeen = new Set();
@@ -476,7 +503,7 @@ async function runGxr3FwUpdateCheck(serialNumber) {
 // PSU reading exactly 0 for either amps or volts means it isn't actually delivering power, even
 // if "hwdiag fan info" still reports it "Present".
 function parseHwdiagPowerFaults(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -513,7 +540,7 @@ function parseHwdiagPowerFaults(output) {
 // session directly, the same way the default chain's own hwdiag commands do.
 async function runPowerOnCheck(serialNumber) {
   console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> hwdiag power get amps/volts all`);
-  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
   const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
   const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
@@ -740,7 +767,7 @@ function extractJiraCheckCodes(summary) {
 // becomes a generic error naming the cable and the bay/module mismatch; 'iob' is highlighted
 // since these cables live on the IOB tray's retimer board.
 function parseHwdiagIoCableFaults(text) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
 

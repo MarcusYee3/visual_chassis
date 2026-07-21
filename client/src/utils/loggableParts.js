@@ -44,6 +44,11 @@ export function getLoggableParts(faults) {
     parts.push({ partId: `pcie-sw-${num}`, partLabel: `PCIE SW ${num}` });
   });
 
+  (faults.dimmIds || []).forEach((id) => {
+    const m = id.match(/^dimm-p(\d)-d(\d+)$/);
+    parts.push({ partId: id, partLabel: m ? `DIMM P${m[1]} D${m[2]}` : id });
+  });
+
   (faults.genericErrors || []).forEach((msg) => {
     parts.push({ partId: `generic-${hashString(msg)}`, partLabel: msg.length > 80 ? `${msg.slice(0, 80)}…` : msg });
   });

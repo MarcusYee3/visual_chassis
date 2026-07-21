@@ -188,7 +188,8 @@
 .green,
 .red,
 .default,
-.purple {
+.purple,
+.orange {
   background-size: 7px 7px, 7px 7px, 7px 7px, 100% 100%;
   background-repeat: repeat, repeat, no-repeat, no-repeat;
 }
@@ -231,6 +232,14 @@
     repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0px, rgba(0, 0, 0, 0.16) 1px, transparent 1px, transparent 7px),
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0px, rgba(0, 0, 0, 0.16) 1px, transparent 1px, transparent 7px),
     linear-gradient(180deg, #3a1e6e 0%, #2a1555 100%);
+}
+
+.orange {
+  background-image:
+    radial-gradient(circle at 3.5px 3.5px, rgba(255, 255, 255, 0.07) 0.6px, transparent 0.6px),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.14) 0px, rgba(0, 0, 0, 0.14) 1px, transparent 1px, transparent 7px),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0px, rgba(0, 0, 0, 0.14) 1px, transparent 1px, transparent 7px),
+    linear-gradient(180deg, #7a5a1e 0%, #5c4215 100%);
 }
 
 /* Layers on top of the tray's own color class (e.g. .purple) rather than

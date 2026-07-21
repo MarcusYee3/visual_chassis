@@ -8,10 +8,11 @@ import E1SBoard from '../components/E1SBoards/E1SBoard';
 import GXR3VRetimer from '../components/GXR3VRetimer/GXR3VRetimer';
 import PCIeSwitch from '../components/PCIeSwitch/PCIeSwitch';
 import FanModule from '../components/FanModule/FanModule';
+import DimmModule from '../components/DimmModule/DimmModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 const genericErrorStyle = {
   width: '100%',
@@ -33,6 +34,7 @@ const BACK_LINK_COLORS = {
   purple: { background: 'linear-gradient(180deg, #392060 0%, #251746 100%)', border: '#5a3a8f', color: '#c9ace8' },
   green: { background: 'linear-gradient(180deg, #1e4a38 0%, #143528 100%)', border: '#3a7a5a', color: '#a8dcc0' },
   red: { background: 'linear-gradient(180deg, #542424 0%, #3c1818 100%)', border: '#8a3a3a', color: '#e8b0b0' },
+  orange: { background: 'linear-gradient(180deg, #5c4215 0%, #3f2d0e 100%)', border: '#8a6a2a', color: '#e8c890' },
 };
 
 const backLinkStyle = (colorKey = 'blue') => {
@@ -66,6 +68,12 @@ const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
 // — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
 const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
 
+// Each CPU (P0/P1) carries 16 DIMM slots (D0-D15) across 4 memory controllers of 4 DIMMs each,
+// per the real captured "CPU <p> Memory Controller <m>" hwdiag fabric-test output — see
+// parseHwdiagFabricTestAll in diagnose.js. Static layout (no fetch needed, unlike OSFP/PSU which
+// vary per unit) since every unit with this platform has the same slot count.
+const DIMM_SLOTS = Array.from({ length: 16 }, (_, i) => i);
+
 function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   const [expandedGbb, setExpandedGbb] = useState(false);
@@ -75,6 +83,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const [expandedGpu, setExpandedGpu] = useState(false);
   const [expandedIob, setExpandedIob] = useState(false);
   const [expandedPsu, setExpandedPsu] = useState(false);
+  const [expandedMb, setExpandedMb] = useState(false);
   const [psuPorts, setPsuPorts] = useState([]);
   const prevFaults = useRef(EMPTY_FAULTS);
 
@@ -93,9 +102,12 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
       !prev.components.includes('psu') && !prev.psuPorts.length;
     const iobFaulted = (has('iob') || faults.retimerIds.length > 0 || faults.e1sIds.length > 0) &&
       !prev.components.includes('iob') && !prev.retimerIds.length && !prev.e1sIds.length;
+    const mbFaulted = (has('mb') || (faults.dimmIds || []).length > 0) &&
+      !prev.components.includes('mb') && !(prev.dimmIds || []).length;
 
     if (psuFaulted) setExpandedPsu(true);
     if (iobFaulted) setExpandedIob(true);
+    if (mbFaulted) setExpandedMb(true);
 
     prevFaults.current = faults;
   }, [faults]);
@@ -110,6 +122,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const handleGpuClick = () => setExpandedGpu(!expandedGpu);
   const handleIobClick = () => setExpandedIob(!expandedIob);
   const handlePsuClick = () => setExpandedPsu(!expandedPsu);
+  const handleMbClick = () => setExpandedMb(!expandedMb);
 
   const handleOsfpClick = (osfpId) => {
     if (expandedOsfp[osfpId]) {
@@ -378,6 +391,41 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             alert={has('psu')}
             interactive onClick={handlePsuClick}
             delay={270} />
+        )}
+
+        {/* Motherboard */}
+        {expandedMb ? (
+          <div style={{ width: '100%' }}>
+            <div style={backLinkStyle('orange')} onClick={handleMbClick} role="button" tabIndex={0}
+              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleMbClick()}>
+              ← Motherboard
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {[0, 1].map((cpu) => (
+                <div key={cpu} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '9px', fontWeight: 700,
+                    letterSpacing: '0.06em', textTransform: 'uppercase', color: '#c08a3a', textAlign: 'center',
+                  }}>
+                    CPU {cpu} (P{cpu})
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
+                    {DIMM_SLOTS.map((slot) => (
+                      <DimmModule key={slot} cpu={cpu} slot={slot}
+                        faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <ServerComponent id="motherboard" name="Motherboard"
+            color="orange"
+            alert={has('mb')}
+            interactive onClick={handleMbClick}
+            badge={(faults.dimmIds || []).length > 0}
+            delay={360} />
         )}
 
       </ServerContainer>

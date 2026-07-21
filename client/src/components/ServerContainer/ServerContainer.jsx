@@ -5,6 +5,7 @@ const U_SECTIONS = [
   { key: 'gpu', label: '6U', grow: 6 },
   { key: 'iob', label: '3U', grow: 3 },
   { key: 'psu', label: '2U', grow: 2 },
+  { key: 'mb', label: '2U', grow: 2 },
 ];
 
 function ServerContainer({ children, label }) {
