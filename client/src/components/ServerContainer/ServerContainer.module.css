@@ -8,23 +8,40 @@
 .outer {
   position: relative;
   width: 740px;
-  /* Layered elevation shadow (tight contact shadow + two soft ambient layers) reads as the unit
-     floating above the page rather than sitting flush on it — transforms/filters are paint-time
-     only, so this doesn't affect the 740px layout box the parent flex container centers against. */
+  /* The page background (#1a1a1e) is already near-black, so a plain dark drop-shadow barely
+     shows up — dark-on-dark has almost no contrast to read as elevation. The layer that actually
+     makes this visible is the last one: a soft, cool-toned ambient glow (light, not dark) under
+     the chassis, the way a floating object catches ambient light from below/behind — that's what
+     reads against a dark page. The first three are a conventional tight-to-soft contact shadow
+     for grounding. transforms/filters are paint-time only, so none of this affects the 740px
+     layout box the parent flex container centers against. Deepens further on hover as a clear,
+     on-demand way to see the effect responding. */
   filter:
-    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5))
-    drop-shadow(0 14px 20px rgba(0, 0, 0, 0.45))
-    drop-shadow(0 28px 42px rgba(0, 0, 0, 0.3));
-  animation: chassisFloat 6s ease-in-out infinite;
+    drop-shadow(0 3px 4px rgba(0, 0, 0, 0.55))
+    drop-shadow(0 20px 26px rgba(0, 0, 0, 0.5))
+    drop-shadow(0 42px 64px rgba(0, 0, 0, 0.35))
+    drop-shadow(0 12px 46px rgba(110, 155, 235, 0.35));
+  animation: chassisFloat 5s ease-in-out infinite;
+  transition: filter 0.25s ease;
+}
+
+.outer:hover {
+  filter:
+    drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6))
+    drop-shadow(0 32px 38px rgba(0, 0, 0, 0.55))
+    drop-shadow(0 64px 90px rgba(0, 0, 0, 0.4))
+    drop-shadow(0 20px 64px rgba(110, 155, 235, 0.5));
 }
 
 /* Plain vertical translateY only — a rotateX/perspective tilt was tried here first but made the
    whole chassis (vent slots, screw holes, the monospace labels) visibly blurry, since tilting a
    detailed element forces the browser to resample its pixels non-uniformly across the tilted
-   surface. A pure translateY renders crisply (no resampling) while still reading as floating. */
+   surface. A pure translateY renders crisply (no resampling) while still reading as floating. A
+   hover-triggered transform isn't used alongside it — the running keyframe animation would fight
+   a separate :hover transform rule every frame, so hover only deepens the glow above instead. */
 @keyframes chassisFloat {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  50% { transform: translateY(-14px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -142,8 +159,9 @@
   top: 0;
   left: 6%;
   right: 6%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.6) 50%, transparent 100%);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.35);
   pointer-events: none;
 }
 
