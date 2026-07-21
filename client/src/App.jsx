@@ -75,24 +75,31 @@ function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
-      <div style={{ width: '100%', maxWidth: '740px', display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ alignSelf: 'stretch', display: 'flex', justifyContent: 'flex-end' }}>
         <NavMenu />
       </div>
-      <ServerForm onSubmit={handleFormSubmit} />
-      {diagnosing && <p style={{ color: '#aaa' }}>{loadingNotice || 'Running diagnostics…'}</p>}
-      {!diagnosing && flowNotice && <p style={{ color: '#aaa' }}>{flowNotice}</p>}
-      {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green' }}>{diagnoseStatus}</p>}
-      {diagnoseError && <p style={{ color: 'red' }}>{diagnoseError}</p>}
-      {logPanel && (
-        <LogFailurePanel
-          serialNumber={logPanel.serialNumber}
-          parts={logPanel.parts}
-          checkName={logPanel.checkName}
-          source={logPanel.source}
-          onDismiss={() => setLogPanel(null)}
-        />
-      )}
-      <ServerOverview refreshKey={refreshKey} faults={faults} />
+      {/* gap is wider than it looks like it needs to be — the chassis's U-height labels and left
+          rack ear are absolutely positioned outside its own 740px layout box (see
+          ServerContainer.module.css), so a smaller gap here crowds right into that decoration. */}
+      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '70px' }}>
+        <div style={{ width: '380px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <ServerForm onSubmit={handleFormSubmit} />
+          {diagnosing && <p style={{ color: '#aaa', margin: 0 }}>{loadingNotice || 'Running diagnostics…'}</p>}
+          {!diagnosing && flowNotice && <p style={{ color: '#aaa', margin: 0 }}>{flowNotice}</p>}
+          {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green', margin: 0 }}>{diagnoseStatus}</p>}
+          {diagnoseError && <p style={{ color: 'red', margin: 0 }}>{diagnoseError}</p>}
+          {logPanel && (
+            <LogFailurePanel
+              serialNumber={logPanel.serialNumber}
+              parts={logPanel.parts}
+              checkName={logPanel.checkName}
+              source={logPanel.source}
+              onDismiss={() => setLogPanel(null)}
+            />
+          )}
+        </div>
+        <ServerOverview refreshKey={refreshKey} faults={faults} />
+      </div>
     </div>
   );
 }
