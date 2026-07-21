@@ -102,21 +102,26 @@
      reads against a dark page. The first three are a conventional tight-to-soft contact shadow
      for grounding. Lives on .chassis specifically (not .outer, which also contains the U-labels/
      rack ears) so the glow hugs just the chassis body. Deepens further on hover as a clear,
-     on-demand way to see the effect responding. */
+     on-demand way to see the effect responding.
+     Blur radii are kept modest on purpose — drop-shadow() bleeds outward on *every* side (not
+     just vertically), so a large blur (previously up to 90px on hover) was visibly spilling past
+     the chassis's left/right edges. That used to blend into the rack-ear decorations that sat
+     right there; once those were removed, the bleed on the right showed up as a bare, floating
+     shape past the chassis edge with nothing to disguise it. */
   filter:
     drop-shadow(0 3px 4px rgba(0, 0, 0, 0.55))
-    drop-shadow(0 20px 26px rgba(0, 0, 0, 0.5))
-    drop-shadow(0 42px 64px rgba(0, 0, 0, 0.35))
-    drop-shadow(0 12px 46px rgba(110, 155, 235, 0.35));
+    drop-shadow(0 16px 18px rgba(0, 0, 0, 0.5))
+    drop-shadow(0 28px 32px rgba(0, 0, 0, 0.35))
+    drop-shadow(0 10px 22px rgba(110, 155, 235, 0.35));
   transition: filter 0.25s ease;
 }
 
 .chassis:hover {
   filter:
     drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6))
-    drop-shadow(0 32px 38px rgba(0, 0, 0, 0.55))
-    drop-shadow(0 64px 90px rgba(0, 0, 0, 0.4))
-    drop-shadow(0 20px 64px rgba(110, 155, 235, 0.5));
+    drop-shadow(0 22px 24px rgba(0, 0, 0, 0.55))
+    drop-shadow(0 40px 44px rgba(0, 0, 0, 0.4))
+    drop-shadow(0 14px 30px rgba(110, 155, 235, 0.5));
 }
 
 /* Thin rim-light along the top edge, as if lit from above — reinforces the tilt/float on .outer
