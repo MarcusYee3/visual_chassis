@@ -8,6 +8,24 @@ import { getLoggableParts } from './utils/loggableParts';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
+// Matches the Form/LogFailurePanel card language (dot-pattern background, subtle border, soft
+// shadow) instead of the bare unstyled <p> tags this used to be — those read as loose, uncontained
+// text floating below the form rather than a distinct status area.
+const statusCardStyle = {
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: '11px',
+  padding: '12px 14px',
+  borderRadius: '6px',
+  border: '1px solid #33405a',
+  backgroundImage:
+    'radial-gradient(circle at 3px 3px, rgba(168, 196, 232, 0.05) 0.5px, transparent 0.5px), linear-gradient(180deg, #1c2333 0%, #161b28 100%)',
+  backgroundSize: '6px 6px, 100% 100%',
+  boxShadow: '0 4px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+};
+
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [faults, setFaults] = useState(EMPTY_FAULTS);
@@ -84,22 +102,31 @@ function App() {
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '70px' }}>
         <div style={{ width: '300px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <ServerForm onSubmit={handleFormSubmit} />
-          {diagnosing && <p style={{ color: '#aaa', margin: 0 }}>{loadingNotice || 'Running diagnostics…'}</p>}
-          {!diagnosing && flowNotice && <p style={{ color: '#aaa', margin: 0 }}>{flowNotice}</p>}
-          {!diagnosing && diagnoseStatus && <p style={{ color: diagnoseStatus.startsWith('Faults') ? 'red' : 'green', margin: 0 }}>{diagnoseStatus}</p>}
-          {diagnoseError && <p style={{ color: 'red', margin: 0 }}>{diagnoseError}</p>}
-          {logPanel && (
-            <LogFailurePanel
-              serialNumber={logPanel.serialNumber}
-              parts={logPanel.parts}
-              checkName={logPanel.checkName}
-              source={logPanel.source}
-              onDismiss={() => setLogPanel(null)}
-            />
+          {(diagnosing || flowNotice || diagnoseStatus || diagnoseError) && (
+            <div style={statusCardStyle}>
+              {diagnosing && <p style={{ color: '#8a9ab0', margin: 0 }}>{loadingNotice || 'Running diagnostics…'}</p>}
+              {!diagnosing && flowNotice && <p style={{ color: '#8a9ab0', margin: 0 }}>{flowNotice}</p>}
+              {!diagnosing && diagnoseStatus && (
+                <p style={{ color: diagnoseStatus.startsWith('Faults') ? '#ff8080' : '#7ad67a', margin: 0 }}>{diagnoseStatus}</p>
+              )}
+              {diagnoseError && <p style={{ color: '#ff8080', margin: 0 }}>{diagnoseError}</p>}
+            </div>
           )}
         </div>
         <ServerOverview refreshKey={refreshKey} faults={faults} />
       </div>
+      {/* Given its own full-width row below the sidebar (rather than squeezed into the 300px
+          sidebar column) so it can actually use its full 740px max-width instead of being capped
+          at 300px. */}
+      {logPanel && (
+        <LogFailurePanel
+          serialNumber={logPanel.serialNumber}
+          parts={logPanel.parts}
+          checkName={logPanel.checkName}
+          source={logPanel.source}
+          onDismiss={() => setLogPanel(null)}
+        />
+      )}
     </div>
   );
 }
