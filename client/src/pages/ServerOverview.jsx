@@ -208,7 +208,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayou
               // E5-2c/E6-2c chassis (per the Jira ticket's own "Model" description field) only
               // carry IOU 3 and IOU 6 — no loopback-cable pairing between them like the 8-IOU JBOG
               // layout below, so these render as two standalone, non-interactive modules instead.
-              <div style={{ display: 'flex', gap: '10px' }}>
+              <div style={{ display: 'flex', gap: '4px' }}>
                 {[3, 6].map((iou) => (
                   <OSFPModule
                     key={iou}
