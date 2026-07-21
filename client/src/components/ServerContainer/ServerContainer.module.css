@@ -95,24 +95,18 @@
   flex-direction: column;
   border: 1px solid #3a3a3a;
   background: linear-gradient(90deg, #5a5a5a 0%, #4a4a4a 3%, #444 50%, #4a4a4a 97%, #3a3a3a 100%);
-  /* The page background (#1a1a1e) is already near-black, so a plain dark drop-shadow barely
-     shows up — dark-on-dark has almost no contrast to read as elevation. The layer that actually
-     makes this visible is the last one: a soft, cool-toned ambient glow (light, not dark) under
-     the chassis, the way a floating object catches ambient light from below/behind — that's what
-     reads against a dark page. The first three are a conventional tight-to-soft contact shadow
-     for grounding. Lives on .chassis specifically (not .outer, which also contains the U-labels/
-     rack ears) so the glow hugs just the chassis body. Deepens further on hover as a clear,
-     on-demand way to see the effect responding.
-     Blur radii are kept modest on purpose — drop-shadow() bleeds outward on *every* side (not
-     just vertically), so a large blur (previously up to 90px on hover) was visibly spilling past
-     the chassis's left/right edges. That used to blend into the rack-ear decorations that sat
-     right there; once those were removed, the bleed on the right showed up as a bare, floating
-     shape past the chassis edge with nothing to disguise it. */
+  /* Plain dark contact shadow only — no colored ambient glow layer. That glow (a soft blue
+     drop-shadow meant to read as light bouncing under a "floating" object) was cut after repeated
+     rounds of visibly bleeding past the chassis's left/right edges and tinting the page background
+     blue, even after shrinking its blur radius twice. drop-shadow() spreads outward on *every*
+     side, not just vertically, so as long as it's tuned by blur radius alone there's no way to
+     keep a highly visible colored layer from spilling sideways at this element's height. Plain
+     dark layers don't have this problem in practice — they blend into the already-dark page
+     background instead of tinting it a visibly different color. */
   filter:
     drop-shadow(0 3px 4px rgba(0, 0, 0, 0.55))
     drop-shadow(0 16px 18px rgba(0, 0, 0, 0.5))
-    drop-shadow(0 28px 32px rgba(0, 0, 0, 0.35))
-    drop-shadow(0 10px 22px rgba(110, 155, 235, 0.35));
+    drop-shadow(0 28px 32px rgba(0, 0, 0, 0.35));
   transition: filter 0.25s ease;
 }
 
@@ -120,8 +114,7 @@
   filter:
     drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6))
     drop-shadow(0 22px 24px rgba(0, 0, 0, 0.55))
-    drop-shadow(0 40px 44px rgba(0, 0, 0, 0.4))
-    drop-shadow(0 14px 30px rgba(110, 155, 235, 0.5));
+    drop-shadow(0 40px 44px rgba(0, 0, 0, 0.4));
 }
 
 /* Thin rim-light along the top edge, as if lit from above — reinforces the tilt/float on .outer
