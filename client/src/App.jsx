@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
+import NavMenu from './components/NavMenu/NavMenu';
 import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
 
@@ -76,9 +76,7 @@ function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
       <div style={{ width: '100%', maxWidth: '740px', display: 'flex', justifyContent: 'flex-end' }}>
-        <Link to="/failures" style={{ color: '#a8c4e8', fontSize: '11px', fontFamily: "'JetBrains Mono', monospace", textDecoration: 'none' }}>
-          Failure Log →
-        </Link>
+        <NavMenu />
       </div>
       <ServerForm onSubmit={handleFormSubmit} />
       {diagnosing && <p style={{ color: '#aaa' }}>{loadingNotice || 'Running diagnostics…'}</p>}

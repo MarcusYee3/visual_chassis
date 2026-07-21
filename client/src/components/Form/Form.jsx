@@ -58,7 +58,7 @@ const ServerForm = ({ onSubmit }) => {
                         name="jiraLink"
                         value={serverData.jiraLink}
                         onChange={handleChange}
-                        placeholder="https://jira.synnex.com/rest/api/2/issue/..."
+                        placeholder="https://jira.synnex.com/rest/api/2/issue/MFG-XXXXXX"
                         disabled={validating}
                     />
                 </label>
