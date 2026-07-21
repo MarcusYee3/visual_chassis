@@ -82,7 +82,7 @@ function App() {
           rack ear are absolutely positioned outside its own 740px layout box (see
           ServerContainer.module.css), so a smaller gap here crowds right into that decoration. */}
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '70px' }}>
-        <div style={{ width: '380px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ width: '300px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <ServerForm onSubmit={handleFormSubmit} />
           {diagnosing && <p style={{ color: '#aaa', margin: 0 }}>{loadingNotice || 'Running diagnostics…'}</p>}
           {!diagnosing && flowNotice && <p style={{ color: '#aaa', margin: 0 }}>{flowNotice}</p>}

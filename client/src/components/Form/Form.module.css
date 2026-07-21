@@ -43,22 +43,19 @@
   color: #8fa8d6;
 }
 
+/* Single column, one field per row — reshapes the form into a tall, narrow rectangle rather than
+   the wide horizontal card it was before (SN/WO side by side), which suits its new home in a
+   fixed-width sidebar better than a layout tuned for a 740px-wide page-width card. */
 .grid {
   display: grid;
-  grid-template-columns: 1.1fr 0.8fr;
-  gap: 14px 16px;
+  grid-template-columns: 1fr;
+  gap: 14px;
 }
 
-.colSn {
-  grid-column: 1;
-}
-
-.colWo {
-  grid-column: 2;
-}
-
+.colSn,
+.colWo,
 .colJira {
-  grid-column: 1 / -1;
+  grid-column: 1;
 }
 
 .label {
@@ -108,15 +105,19 @@
   cursor: not-allowed;
 }
 
+/* Stacked (error above button, both full-width) rather than side-by-side, matching the form's
+   new single-column, vertical-rectangle shape. */
 .footer {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
 }
 
 .button {
-  padding: 10px 20px;
+  padding: 11px 20px;
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid #3a5a8f;
   border-radius: 3px;
   background: linear-gradient(180deg, #2c3e5a 0%, #1e2d45 100%);
@@ -146,18 +147,8 @@
 }
 
 .error {
-  flex: 1;
   margin: 0;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: #ff8080;
-}
-
-@media (max-width: 560px) {
-  .grid {
-    grid-template-columns: 1fr;
-  }
-  .colWo {
-    grid-column: 1;
-  }
 }
