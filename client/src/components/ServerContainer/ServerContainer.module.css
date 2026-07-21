@@ -87,45 +87,6 @@
   color: #888;
 }
 
-/* Rack mounting ears — absolutely positioned off the left/right edges of .outer's 740px box
-   (see .outer's comment above) rather than laid out as flex siblings that would widen it. */
-.rackEarLeft,
-.rackEarRight {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 24px;
-  background: linear-gradient(180deg, #555 0%, #484848 50%, #505050 100%);
-  border: 1px solid #3a3a3a;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-around;
-  padding: 20px 0;
-  box-sizing: border-box;
-}
-
-.rackEarLeft {
-  right: calc(100% + 6px + 32px);
-  border-radius: 3px 0 0 3px;
-  border-right: none;
-}
-
-.rackEarRight {
-  left: 100%;
-  border-radius: 0 3px 3px 0;
-  border-left: none;
-}
-
-.screwHole {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 40% 40%, #666, #2a2a2a 60%, #222 100%);
-  border: 1px solid #333;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
-}
-
 /* Main chassis */
 .chassis {
   width: 740px;

@@ -25,11 +25,6 @@ function ServerContainer({ children, label }) {
         </div>
         <div className={styles.uLabelsBottomSpacer} />
       </div>
-      <div className={styles.rackEarLeft}>
-        <div className={styles.screwHole} />
-        <div className={styles.screwHole} />
-        <div className={styles.screwHole} />
-      </div>
       <div className={styles.chassis}>
         <div className={`${styles.cornerScrew} ${styles.screwTL}`} />
         <div className={`${styles.cornerScrew} ${styles.screwTR}`} />
@@ -70,11 +65,6 @@ function ServerContainer({ children, label }) {
         <div className={styles.bottomEdge} />
         <div className={`${styles.cornerScrew} ${styles.screwBL}`} />
         <div className={`${styles.cornerScrew} ${styles.screwBR}`} />
-      </div>
-      <div className={styles.rackEarRight}>
-        <div className={styles.screwHole} />
-        <div className={styles.screwHole} />
-        <div className={styles.screwHole} />
       </div>
     </div>
   );
