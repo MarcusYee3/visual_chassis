@@ -187,13 +187,28 @@ function parseIlomProblems(output) {
   if (/\/SYS\/GBB|\/SYS\/OSFP|class\s*=\s*PCIE\b/i.test(output)) addComp('gbb');
 
   // DIMM faults — /SYS/MB/P<cpu>/D<slot> (confirmed against real "hwdiag system fabric test all"
-  // output, e.g. "/SYS/MB/P0/D6"). Only two CPUs (P0/P1), each with 16 DIMM slots (D0-D15) across
-  // 4 memory controllers of 4 DIMMs each, per the real captured "CPU N Memory Controller M"
-  // sections — see parseHwdiagFabricTestAll below for the PASSED/FAILED per-DIMM training result,
-  // this just catches a DIMM resource path named directly in Open_Problems/fmadm output.
+  // output, e.g. "/SYS/MB/P0/D6", AND against a real fmadm faulty -a DIMM training-failure Suspect
+  // block, 2629YW10ML, 2026-07-21, whose "Affects"/FRU "Location" lines both read
+  // "/SYS/MB/P0/D3"). Only two CPUs (P0/P1), each with 16 DIMM slots (D0-D15) across 4 memory
+  // controllers of 4 DIMMs each, per the real captured "CPU N Memory Controller M" sections — see
+  // parseHwdiagFabricTestAll below for the PASSED/FAILED per-DIMM training result.
   const dimmRe = /\/SYS\/MB\/P(\d)\/D(\d+)/gi;
   while ((m = dimmRe.exec(output)) !== null) {
     add(faults.dimmIds, dimmSeen, `dimm-p${m[1]}-d${m[2]}`);
+    addComp('mb');
+  }
+  // Fallback for a DIMM fault reported without a clean per-slot "Affects"/"Location" path — e.g.
+  // the same real fault's own Response text warns "All memory DIMMs in the channel have been
+  // disabled", a channel-wide condition that might not always resolve to one specific /SYS/MB/
+  // P<n>/D<n> line. The literal word "DIMM" itself (problem class "fault.memory.amd.dimm...",
+  // FRU Name "DDR5 SDRAM DIMM", etc.) is a broader, more reliable signal to watch for than
+  // depending on the resource-path convention alone — same fallback pattern already used above
+  // for fan faults reported without one specific FM number. "DIMMs?" (not "\bDIMM\b" alone) since
+  // a plain word-boundary match doesn't match the plural "DIMMs" — no boundary exists between the
+  // "M" and the "s", both being word characters — which is exactly the real channel-wide phrasing
+  // this fallback exists to catch.
+  if (dimmSeen.size === 0 && /\bDIMMs?\b/i.test(output)) {
+    faults.genericErrors.push('DIMM-related fault reported (e.g. training failure or channel disable) — see raw output for the specific slot');
     addComp('mb');
   }
 
