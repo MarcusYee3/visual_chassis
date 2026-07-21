@@ -23,6 +23,15 @@
   background: linear-gradient(180deg, #2c4a78 0%, #1e3456 100%);
 }
 
+.chevron {
+  display: inline-block;
+  transition: transform 0.18s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
 .dropdown {
   position: absolute;
   top: calc(100% + 6px);
@@ -36,6 +45,29 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   z-index: 20;
+  /* Mounted at all times (see NavMenu.jsx) so both open and close animate via these two
+     properties instead of the panel just popping in/out. */
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+  transform-origin: top right;
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.dropdown.open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropdown {
+    transition: opacity 0.16s ease;
+    transform: none;
+  }
+  .dropdown.open {
+    transform: none;
+  }
 }
 
 .item {

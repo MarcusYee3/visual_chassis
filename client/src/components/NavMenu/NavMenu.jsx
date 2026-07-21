@@ -17,14 +17,14 @@ function NavMenu() {
   return (
     <div className={styles.wrapper} ref={wrapperRef}>
       <button className={styles.trigger} type="button" onClick={() => setOpen((o) => !o)}>
-        Menu {open ? '▴' : '▾'}
+        Menu <span className={`${styles.chevron} ${open ? styles.chevronOpen : ''}`}>▾</span>
       </button>
-      {open && (
-        <div className={styles.dropdown}>
-          <Link className={styles.item} to="/failures" onClick={() => setOpen(false)}>Failure Log</Link>
-          <Link className={styles.item} to="/about" onClick={() => setOpen(false)}>About</Link>
-        </div>
-      )}
+      {/* Always mounted (rather than conditionally rendered) so closing can transition out via
+          CSS instead of the panel just disappearing instantly. */}
+      <div className={`${styles.dropdown} ${open ? styles.open : ''}`}>
+        <Link className={styles.item} to="/failures" onClick={() => setOpen(false)}>Failure Log</Link>
+        <Link className={styles.item} to="/about" onClick={() => setOpen(false)}>About</Link>
+      </div>
     </div>
   );
 }
