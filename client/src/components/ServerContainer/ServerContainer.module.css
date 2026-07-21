@@ -15,24 +15,21 @@
     drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5))
     drop-shadow(0 14px 20px rgba(0, 0, 0, 0.45))
     drop-shadow(0 28px 42px rgba(0, 0, 0, 0.3));
-  transform-origin: center top;
   animation: chassisFloat 6s ease-in-out infinite;
 }
 
-/* A slight rotateX (via transform's own perspective(), so no separate parent `perspective`
-   declaration is needed) plus a small vertical bob — subtle enough to keep the chassis reading
-   as flat/legible, not gimmicky. transform doesn't shift the horizontal center (rotateX pivots
-   only in depth/vertical), so it can't reintroduce the chassis/form centering offset fixed
-   earlier. Reduced-motion users get the tilt without the continuous motion. */
+/* Plain vertical translateY only — a rotateX/perspective tilt was tried here first but made the
+   whole chassis (vent slots, screw holes, the monospace labels) visibly blurry, since tilting a
+   detailed element forces the browser to resample its pixels non-uniformly across the tilted
+   surface. A pure translateY renders crisply (no resampling) while still reading as floating. */
 @keyframes chassisFloat {
-  0%, 100% { transform: perspective(1400px) rotateX(3deg) translateY(0); }
-  50% { transform: perspective(1400px) rotateX(3deg) translateY(-6px); }
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .outer {
     animation: none;
-    transform: perspective(1400px) rotateX(3deg);
   }
 }
 
