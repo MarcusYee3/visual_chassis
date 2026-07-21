@@ -1,11 +1,13 @@
 import styles from './ServerContainer.module.css';
 
+// Motherboard isn't a rack-mounted slot in this chassis — it's an external unit (a separate head
+// node) linked in via cable, rendered as a floating panel beside the chassis in
+// ServerOverview.jsx rather than occupying a U-height row here.
 const U_SECTIONS = [
   { key: 'osfp', label: '1U', grow: 1 },
   { key: 'gpu', label: '6U', grow: 6 },
   { key: 'iob', label: '3U', grow: 3 },
   { key: 'psu', label: '2U', grow: 2 },
-  { key: 'mb', label: '2U', grow: 2 },
 ];
 
 function ServerContainer({ children, label }) {

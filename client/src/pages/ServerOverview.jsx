@@ -64,6 +64,13 @@ const backLinkStyle = (colorKey = 'blue') => {
 const faultBorder = '1px solid #ff4444';
 const faultGlow = '0 0 12px rgba(255,68,68,0.5), 0 0 24px rgba(255,68,68,0.2)';
 
+// Checked once at module load (not per-render) since it can't change without a page reload —
+// used to skip the floating Motherboard panel's continuous bob animation for users who've asked
+// for reduced motion, since it's driven by an inline style (not a CSS module) and so can't rely
+// on a @media query the way ServerContainer/ServerComponent's own animations do.
+const prefersReducedMotion = typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
 // Real IOU numbers carrying a GXR3 retimer card (same 8 IOUs the OSFP boards use, 1,2,4,5,6,7,9,10
 // — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
 const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
@@ -165,6 +172,17 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const bmcFaulted = has('bmc');
   const rotFaulted = has('rot');
 
+  // Motherboard is an external unit (the DIMMs live on a separate physical head node) linked in
+  // via cable to the GBB Tray rather than occupying a rack slot — see the floating panel below.
+  const mbFaulted = has('mb') || (faults.dimmIds || []).length > 0;
+  const mbCableColor = mbFaulted ? '#ff4444' : '#c08a3a';
+  const mbPlugStyle = {
+    width: '5px', height: '12px', borderRadius: '1px', flexShrink: 0,
+    background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
+    border: `1px solid ${mbCableColor}`,
+    boxShadow: mbFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
       {(faults.genericErrors || []).length > 0 && (
@@ -174,6 +192,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           ))}
         </div>
       )}
+      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start' }}>
       <ServerContainer label={`${server.name} — SN: ${server.serialNumber}`}>
 
         {/* GBB Tray */}
@@ -393,42 +412,70 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             delay={270} />
         )}
 
-        {/* Motherboard */}
-        {expandedMb ? (
-          <div style={{ width: '100%' }}>
-            <div style={backLinkStyle('orange')} onClick={handleMbClick} role="button" tabIndex={0}
-              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleMbClick()}>
-              ← Motherboard
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-              {[0, 1].map((cpu) => (
-                <div key={cpu} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{
-                    fontFamily: "'JetBrains Mono', monospace", fontSize: '9px', fontWeight: 700,
-                    letterSpacing: '0.06em', textTransform: 'uppercase', color: '#c08a3a', textAlign: 'center',
-                  }}>
-                    CPU {cpu} (P{cpu})
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
-                    {DIMM_SLOTS.map((slot) => (
-                      <DimmModule key={slot} cpu={cpu} slot={slot}
-                        faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <ServerComponent id="motherboard" name="Motherboard"
-            color="orange"
-            alert={has('mb')}
-            interactive onClick={handleMbClick}
-            badge={(faults.dimmIds || []).length > 0}
-            delay={360} />
-        )}
-
       </ServerContainer>
+
+        {/* Motherboard — external unit, cabled to the GBB Tray rather than rack-mounted (its
+            DIMMs live on a separate physical head node, not this chassis). */}
+        <div style={{ display: 'flex', alignItems: 'center', marginTop: '36px', flexShrink: 0 }}
+          title={`Head node motherboard — linked via cable${mbFaulted ? ' — FAULT' : ''}`}>
+          <div style={{ display: 'flex', alignItems: 'center', width: '46px', flexShrink: 0 }}>
+            <div style={mbPlugStyle} />
+            <div style={{
+              flex: 1, height: 0,
+              borderTop: `2px dotted ${mbCableColor}`,
+              filter: mbFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+            }} />
+            <div style={mbPlugStyle} />
+          </div>
+          <div
+            onClick={handleMbClick} role="button" tabIndex={0}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleMbClick()}
+            style={{
+              width: expandedMb ? '210px' : '170px',
+              padding: '10px 12px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(224,168,80,0.06) 0.5px, transparent 0.5px), linear-gradient(180deg, #2a2010 0%, #1e1608 100%)',
+              backgroundSize: '6px 6px, 100% 100%',
+              border: mbFaulted ? faultBorder : '1px solid #5a4520',
+              boxShadow: mbFaulted ? faultGlow : '0 4px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+              animation: prefersReducedMotion ? 'none' : 'motherboardFloat 5s ease-in-out infinite',
+              transition: 'width 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: expandedMb ? '10px' : '0' }}>
+              <span style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
+                letterSpacing: '0.06em', textTransform: 'uppercase', color: mbFaulted ? '#ff9999' : '#e0a850',
+              }}>
+                Motherboard
+              </span>
+              <span style={{ color: mbFaulted ? '#ff4444' : '#8a6a2a', fontSize: '10px' }}>{expandedMb ? '✕' : '▸'}</span>
+            </div>
+            {expandedMb && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {[0, 1].map((cpu) => (
+                  <div key={cpu} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{
+                      fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                      letterSpacing: '0.04em', textTransform: 'uppercase', color: '#c08a3a', textAlign: 'center',
+                    }}>
+                      CPU {cpu} (P{cpu})
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
+                      {DIMM_SLOTS.map((slot) => (
+                        <DimmModule key={slot} cpu={cpu} slot={slot}
+                          faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+      </div>
     </div>
   );
 }
