@@ -242,7 +242,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             color="blue"
             alert={has('gbb')}
             interactive onClick={handleGbbClick}
-            badge={(faults.pcieFaults || []).length > 0 || (faults.cableFaults || []).length > 0} />
+            badge={(faults.pcieFaults || []).length > 0 || (faults.cableFaults || []).length > 0}
+            delay={0} />
         )}
 
         {/* GPU Baseboard */}
@@ -268,7 +269,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             alert={has('gpu')}
             interactive onClick={handleGpuClick}
             badge={(faults.fanIds || []).length > 0}
-            style={{ height: '140px' }} />
+            style={{ height: '140px' }}
+            delay={90} />
         )}
 
         {/* IOB Tray */}
@@ -344,7 +346,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             color="green"
             alert={has('iob')}
             interactive onClick={handleIobClick}
-            style={{ height: '120px' }} />
+            style={{ height: '120px' }}
+            delay={180} />
         )}
 
         {/* PSU */}
@@ -373,7 +376,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
           <ServerComponent id="psu" name="PSU"
             color="red"
             alert={has('psu')}
-            interactive onClick={handlePsuClick} />
+            interactive onClick={handlePsuClick}
+            delay={270} />
         )}
 
       </ServerContainer>
