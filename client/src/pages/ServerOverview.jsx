@@ -432,9 +432,9 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayou
 
       </ServerContainer>
 
-        {/* Motherboard — external unit, cabled to the GBB Tray rather than rack-mounted (its
+        {/* Motherboard — external unit, cabled to the IOB Tray rather than rack-mounted (its
             DIMMs live on a separate physical head node, not this chassis). */}
-        <div style={{ display: 'flex', alignItems: 'center', marginTop: '36px', flexShrink: 0 }}
+        <div style={{ display: 'flex', alignItems: 'center', marginTop: '326px', flexShrink: 0 }}
           title={`Head node motherboard — linked via cable${mbFaulted ? ' — FAULT' : ''}`}>
           <div style={{ display: 'flex', alignItems: 'center', width: '46px', flexShrink: 0 }}>
             <div style={mbPlugStyle} />
