@@ -102,22 +102,28 @@ function App() {
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '70px' }}>
         <div style={{ width: '300px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <ServerForm onSubmit={handleFormSubmit} />
-          {(diagnosing || flowNotice || diagnoseStatus || diagnoseError) && (
+          {(diagnosing || flowNotice || diagnoseStatus) && (
             <div style={statusCardStyle}>
               {diagnosing && <p style={{ color: '#8a9ab0', margin: 0 }}>{loadingNotice || 'Running diagnostics…'}</p>}
               {!diagnosing && flowNotice && <p style={{ color: '#8a9ab0', margin: 0 }}>{flowNotice}</p>}
               {!diagnosing && diagnoseStatus && (
                 <p style={{ color: diagnoseStatus.startsWith('Faults') ? '#ff8080' : '#7ad67a', margin: 0 }}>{diagnoseStatus}</p>
               )}
-              {diagnoseError && <p style={{ color: '#ff8080', margin: 0 }}>{diagnoseError}</p>}
             </div>
           )}
         </div>
         <ServerOverview refreshKey={refreshKey} faults={faults} />
       </div>
-      {/* Given its own full-width row below the sidebar (rather than squeezed into the 300px
-          sidebar column) so it can actually use its full 740px max-width instead of being capped
-          at 300px. */}
+      {/* diagnoseError and LogFailurePanel both get their own full-width row below the sidebar
+          (rather than squeezed into the 300px sidebar column, where the error text used to
+          collide with the chassis's absolutely-positioned U-height labels/rack ear that extend
+          left of its own 740px layout box — see the gap comment above) so they can use the full
+          740px width instead of being capped at 300px. */}
+      {diagnoseError && (
+        <div style={{ ...statusCardStyle, width: '100%', maxWidth: '740px' }}>
+          <p style={{ color: '#ff8080', margin: 0 }}>{diagnoseError}</p>
+        </div>
+      )}
       {logPanel && (
         <LogFailurePanel
           serialNumber={logPanel.serialNumber}
