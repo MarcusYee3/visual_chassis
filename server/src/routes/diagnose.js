@@ -215,7 +215,13 @@ function parseIlomProblems(output) {
   // PCIe faults — two possible shapes depending on which ILOM command produced the output:
   //  (1) show /System/Open_Problems: inline "(Probability:N, UUID:x, Resource:y, ...)" per problem
   //  (2) fmadm faulty -a: one "Suspect N of M" block per fault, with Certainty + Resource/Location
-  const iouPcieRe = /\/SYS\/IOU(\d+)\/PCIE(\d+)/i;
+  // The resource path's carrier can be either a PCIe port (PCIE<n>) or a storage device sitting
+  // directly in an IOU bay (SSD<n>) — confirmed on real hardware, SN 2630YW1027, 2026-07-23,
+  // "show /System/Open_Problems" -> Subsystems "Storage", "A PCI link error has been detected on
+  // a PCI card." with Resource:/SYS/IOU2/SSD201. Both are genuine PCIe-link faults on that IOU, so
+  // they're merged into the same pcieFaults shape — the GBB Tray only ever highlights by `iou`,
+  // not by what the trailing number after it actually names.
+  const iouPcieRe = /\/SYS\/IOU(\d+)\/(?:PCIE|SSD)(\d+)/i;
   const pcieSeen = new Set();
   const addPcieFault = (resource, probability) => {
     const pciePathMatch = resource.match(iouPcieRe);
