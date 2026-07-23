@@ -598,37 +598,36 @@ async function runPowerOnCheck(serialNumber) {
 // "5_CHECK_POWER_ON-7_UPDATE_HOSTNIC_FW_REMOTE" — see describeJiraFlow below, which detects this
 // specific pairing). UPDATE_HOSTNIC_FW_REMOTE needs the host's own network interface (HOSTNIC) up
 // to run at all, so a down HOSTNIC link plausibly explains both failures firing together without
-// either being a real PS0/PS1 power-rail fault — skip the full hwdiag power-rail SSH flow
-// (runPowerOnCheck above) entirely and just read eve_ip's own HOSTNIC row.
-async function runHostnicDacCableCheck(serialNumber) {
-  console.log(`[diagnose] running CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired flow for ${serialNumber}: eve_ip HOSTNIC status only`);
+// either being a real PS0/PS1 power-rail fault — check eve_ip's own HOSTNIC row *first*, since
+// it's near-instant compared to the full hwdiag power-rail SSH flow. Only when that quick check
+// doesn't explain it (HOSTNIC row missing or reporting up) does this fall through to the normal
+// runPowerOnCheck flow — the power-rail check still needs to run in that case, since the pairing
+// alone doesn't rule out a real power-rail fault.
+async function runPowerOnHostnicPairedCheck(serialNumber) {
+  console.log(`[diagnose] running CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired flow for ${serialNumber}: eve_ip HOSTNIC status first, then power-rail check if needed`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
   const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
   const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-  if (!hostnicRowMatch) {
-    return { faults: { ...emptyFaults, genericErrors: [`CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} in eve_ip output`] }, raw: eveOut };
+  if (hostnicRowMatch) {
+    const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
+    if (!/^up$/i.test(hostnicStatus)) {
+      return {
+        faults: {
+          ...emptyFaults,
+          genericErrors: [`CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired failure: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`],
+        },
+        raw: eveOut,
+      };
+    }
+  } else {
+    console.log(`[diagnose] CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} in eve_ip output — falling through to the power-rail check`);
   }
-  const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
-  if (!/^up$/i.test(hostnicStatus)) {
-    return {
-      faults: {
-        ...emptyFaults,
-        genericErrors: [`CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired failure: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`],
-      },
-      raw: eveOut,
-    };
-  }
-  // HOSTNIC is up, so the down-cable theory doesn't hold here — say so rather than staying silent
-  // (which would misleadingly read as "no problem found" for a ticket that's still failing both
-  // checks) or guessing at a cause this quick check was never meant to diagnose.
-  return {
-    faults: {
-      ...emptyFaults,
-      genericErrors: [`CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired failure: HOSTNIC (${hostnicIp}) is reported up — DAC cable looks connected, cause not identified by this quick check`],
-    },
-    raw: eveOut,
-  };
+
+  // HOSTNIC is up (or its row wasn't found at all) — the down-cable theory doesn't hold, so run
+  // the real power-rail check same as an unpaired CHECK_POWER_ON would.
+  const powerResult = await runPowerOnCheck(serialNumber);
+  return { faults: powerResult.faults, raw: `${eveOut}\n${powerResult.raw}` };
 }
 
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
@@ -638,7 +637,7 @@ const MFG_COLLECTOR_TARGETED_CHECKS = {
   VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
   UPDATE_GXR3_FW: runGxr3FwUpdateCheck,
   CHECK_POWER_ON: runPowerOnCheck,
-  CHECK_POWER_ON_HOSTNIC_DAC: runHostnicDacCableCheck,
+  CHECK_POWER_ON_HOSTNIC_DAC: runPowerOnHostnicPairedCheck,
 };
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
