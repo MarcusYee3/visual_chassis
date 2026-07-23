@@ -14,21 +14,6 @@ import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
-const genericErrorStyle = {
-  width: '100%',
-  maxWidth: '740px',
-  padding: '8px 14px',
-  fontFamily: "'JetBrains Mono', monospace",
-  fontSize: '11px',
-  fontWeight: 700,
-  letterSpacing: '0.04em',
-  color: '#ffd6d6',
-  background: 'linear-gradient(180deg, #7a2020 0%, #5c1818 100%)',
-  border: '1px solid #cc3333',
-  borderRadius: '6px',
-  boxShadow: '0 0 12px rgba(204,51,51,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
-};
-
 const BACK_LINK_COLORS = {
   blue: { background: 'linear-gradient(180deg, #243d64 0%, #182a48 100%)', border: '#3a5a8f', color: '#a8c4e8' },
   purple: { background: 'linear-gradient(180deg, #392060 0%, #251746 100%)', border: '#5a3a8f', color: '#c9ace8' },
@@ -184,14 +169,6 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-      {(faults.genericErrors || []).length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '740px' }}>
-          {faults.genericErrors.map((msg, i) => (
-            <div key={i} style={genericErrorStyle}>⚠ {msg}</div>
-          ))}
-        </div>
-      )}
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start' }}>
       <ServerContainer label={`${server.name} — SN: ${server.serialNumber}`}>
 
@@ -476,7 +453,6 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         </div>
 
       </div>
-    </div>
   );
 }
 

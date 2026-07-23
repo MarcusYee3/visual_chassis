@@ -26,6 +26,21 @@ const statusCardStyle = {
   gap: '6px',
 };
 
+const genericErrorStyle = {
+  width: '100%',
+  maxWidth: '740px',
+  padding: '8px 14px',
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: '11px',
+  fontWeight: 700,
+  letterSpacing: '0.04em',
+  color: '#ffd6d6',
+  background: 'linear-gradient(180deg, #7a2020 0%, #5c1818 100%)',
+  border: '1px solid #cc3333',
+  borderRadius: '6px',
+  boxShadow: '0 0 12px rgba(204,51,51,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
+};
+
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [faults, setFaults] = useState(EMPTY_FAULTS);
@@ -114,11 +129,19 @@ function App() {
         </div>
         <ServerOverview refreshKey={refreshKey} faults={faults} />
       </div>
-      {/* diagnoseError and LogFailurePanel both get their own full-width row below the sidebar
-          (rather than squeezed into the 300px sidebar column, where the error text used to
-          collide with the chassis's absolutely-positioned U-height labels/rack ear that extend
-          left of its own 740px layout box — see the gap comment above) so they can use the full
-          740px width instead of being capped at 300px. */}
+      {/* genericErrors, diagnoseError, and LogFailurePanel all get their own full-width row below
+          the sidebar (rather than squeezed into the 300px sidebar column, or — for genericErrors —
+          rendered inside ServerOverview right above the chassis header) so they can use the full
+          740px width instead of being capped at 300px, and so they don't crowd the chassis's
+          absolutely-positioned U-height labels/rack ear that extend left of its own 740px layout
+          box (see the gap comment above). */}
+      {(faults.genericErrors || []).length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', maxWidth: '740px' }}>
+          {faults.genericErrors.map((msg, i) => (
+            <div key={i} style={genericErrorStyle}>⚠ {msg}</div>
+          ))}
+        </div>
+      )}
       {diagnoseError && (
         <div style={{ ...statusCardStyle, width: '100%', maxWidth: '740px' }}>
           <p style={{ color: '#ff8080', margin: 0 }}>{diagnoseError}</p>
