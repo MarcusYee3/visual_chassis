@@ -81,7 +81,7 @@ const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
 // vary per unit) since every unit with this platform has the same slot count.
 const DIMM_SLOTS = Array.from({ length: 16 }, (_, i) => i);
 
-function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayout = false }) {
+function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   const [expandedGbb, setExpandedGbb] = useState(false);
   const [osfpModules, setOsfpModules] = useState([]);
@@ -97,12 +97,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayou
   const has = (comp) => faults.components.includes(comp);
 
   useEffect(() => {
-    // E5-2c/E6-2c chassis (reducedIouLayout) only ever show IOU 3/6 as standalone modules, not
-    // the usual 4 cable-pair OSFP modules — skip fetching data we won't render.
-    if (expandedGbb && osfpModules.length === 0 && !reducedIouLayout) {
+    if (expandedGbb && osfpModules.length === 0) {
       getOSFPModules('server-1').then(setOsfpModules).catch(console.error);
     }
-  }, [expandedGbb, osfpModules.length, reducedIouLayout]);
+  }, [expandedGbb, osfpModules.length]);
 
   // Auto-expand trays when their faults arrive
   useEffect(() => {
@@ -204,21 +202,6 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayou
               onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleGbbClick()}>
               ← GBB Tray
             </div>
-            {reducedIouLayout ? (
-              // E5-2c/E6-2c chassis (per the Jira ticket's own "Model" description field) only
-              // carry IOU 3 and IOU 6 — no loopback-cable pairing between them like the 8-IOU JBOG
-              // layout below, so these render as two standalone, non-interactive modules instead.
-              <div style={{ display: 'flex', gap: '4px' }}>
-                {[3, 6].map((iou) => (
-                  <OSFPModule
-                    key={iou}
-                    id={`iou-${iou}`}
-                    name={`IOU ${iou}`}
-                    hasFault={(faults.pcieFaults || []).some((f) => f.iou === iou)}
-                  />
-                ))}
-              </div>
-            ) : (
             <div style={{ display: 'flex', gap: '4px' }}>
               {osfpModules.map((mod) => {
                 const modIouNums = (mod.pciePorts || []).map((p) => parseInt(p.name.replace(/\D/g, ''), 10));
@@ -285,7 +268,6 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reducedIouLayou
                 );
               })}
             </div>
-            )}
           </div>
         ) : (
           <ServerComponent id="gbb-tray" name="GBB Tray"

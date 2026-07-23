@@ -35,7 +35,6 @@ function App() {
   const [flowNotice, setFlowNotice] = useState('');
   const [loadingNotice, setLoadingNotice] = useState('');
   const [logPanel, setLogPanel] = useState(null); // { serialNumber, parts, checkName, source }
-  const [reducedIouLayout, setReducedIouLayout] = useState(false);
 
   const handleFormSubmit = async (formData) => {
     await updateServer('server-1', { serialNumber: formData.sn });
@@ -48,7 +47,6 @@ function App() {
     setDiagnoseStatus('');
     setFlowNotice('');
     setLoadingNotice('');
-    setReducedIouLayout(false);
 
     // The real diagnose request takes tens of seconds (ILOM SSH round-trips); precheck is a
     // near-instant read of the same decision it's about to make (mfg-collector cache, or the
@@ -70,9 +68,6 @@ function App() {
       const f = result.faults ?? EMPTY_FAULTS;
       setFaults(f);
       setFlowNotice(result.defaultFlowNotice || '');
-      // Only ever true when a Jira ticket's "Model" description field matched E5-2c/E6-2c —
-      // those chassis only carry IOU 3 and IOU 6 (see ServerOverview.jsx's GBB Tray rendering).
-      setReducedIouLayout(!!result.reducedIouLayout);
       const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
       // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
       // short-circuit (a matched targeted check, a forced check, or faults already documented in
@@ -118,7 +113,7 @@ function App() {
             </div>
           )}
         </div>
-        <ServerOverview refreshKey={refreshKey} faults={faults} reducedIouLayout={reducedIouLayout} />
+        <ServerOverview refreshKey={refreshKey} faults={faults} />
       </div>
       {/* Given its own full-width row below the sidebar (rather than squeezed into the 300px
           sidebar column) so it can actually use its full 740px max-width instead of being capped
