@@ -1095,12 +1095,16 @@ router.get('/', async (req, res) => {
     // text doesn't match any fault pattern, so parseIlomProblems returned zero faults and the
     // user saw a misleading "No open problems detected." instead of being told the ILOM is down.
     const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+    console.log('[diagnose] eve_ip raw output:\n', eveOut);
     const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
     if (!ilomRowMatch) {
+      console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — returning 400`);
       return res.status(400).json({ error: `No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}` });
     }
     const [, eveIlomIp, ilomStatus] = ilomRowMatch;
+    console.log(`[diagnose] eve_ip: ILOM row matched — IP ${eveIlomIp}, status "${ilomStatus}"`);
     if (!/^up$/i.test(ilomStatus)) {
+      console.log(`[diagnose] eve_ip: ILOM status "${ilomStatus}" is not up — returning 400, skipping the SSH chain entirely`);
       return res.status(400).json({ error: `ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} (IP ${eveIlomIp}) by eve_ip — cannot run diagnostics until it is back up` });
     }
     const ilomIp = ilomIpParam || eveIlomIp;
