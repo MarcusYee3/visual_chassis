@@ -1126,17 +1126,16 @@ router.get('/', async (req, res) => {
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
 
-    // The real default/generic command flow (whatever reason landed us here — no mfg-collector
-    // record, a failing check the ILOM chain happens to cover, or a failing check with no
-    // dedicated script) never includes the OSFP loopback check (lionking_OSFP.py), the GXR3
-    // firmware check (gxr3_fw_update_check), or the POWER_ON power-rail check (runPowerOnCheck)
-    // — those only ever run when specifically matched (mfg-collector flags VERIFY_OSFP_LINKS/
-    // UPDATE_GXR3_FW, a Jira ticket mentions POWER_ON, handled by targetedCheckName above, or
-    // ?forceCheck=). Exclude them from Step 3's targeted-check loop unconditionally rather than
-    // only for one specific branch — an earlier version of this only excluded them when
-    // collectorStatus.checkName was exactly CHECK_ILOM_FAULTS, which left every other
-    // default-flow reason (e.g. no mfg-collector record at all) still sweeping them in.
-    const excludedTargetedChecks = ['VERIFY_OSFP_LINKS', 'UPDATE_GXR3_FW', 'CHECK_POWER_ON', 'CHECK_POWER_ON_HOSTNIC_DAC'];
+    // The real default/generic command flow now runs every known diagnostic command
+    // unconditionally — Open_Problems/fmadm/hwdiag below, plus every targeted check in Step 3's
+    // loop (the OSFP loopback check lionking_OSFP.py, the GXR3 firmware check
+    // gxr3_fw_update_check, and the POWER_ON power-rail check runPowerOnCheck) — not just the ones
+    // a mfg-collector/Jira match happened to name. The one exception is
+    // CHECK_POWER_ON_HOSTNIC_DAC: it isn't a standalone command, it's routing logic for one
+    // specific Jira pairing (see describeJiraFlow), and its own fallback already re-runs
+    // runPowerOnCheck internally — sweeping it in here too would just pay for the same power-rail
+    // SSH session a second time for no new information.
+    const excludedTargetedChecks = ['CHECK_POWER_ON_HOSTNIC_DAC'];
 
     // Step 1: check ILOM status via eve_ip unconditionally — even when ilomIpParam was already
     // supplied (e.g. by /validate-sn, whose own ILOM regex only checks that an ILOM row exists,
