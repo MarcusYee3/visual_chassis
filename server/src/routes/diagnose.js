@@ -560,7 +560,7 @@ function parseHwdiagPowerFaults(output) {
 // lionking_OSFP.py/GXR3_update_check (external scripts run locally), this one drives the ILOM
 // session directly, the same way the default chain's own hwdiag commands do.
 async function runPowerOnCheck(serialNumber) {
-  console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> hwdiag power get amps/volts all`);
+  console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> show /SYS -> hwdiag power get amps/volts all`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
   const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
@@ -579,6 +579,24 @@ async function runPowerOnCheck(serialNumber) {
   const ilomUser = process.env.ILOM_USER || 'root';
   const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
 
+  // Check /SYS's own power_state property first, before paying for the hwdiag power-rail session
+  // below — a server that's simply powered off will read near-0A/0V on every rail, which
+  // parseHwdiagPowerFaults would otherwise misreport as a genuine PS0/PS1 delivery fault instead
+  // of what it actually is (the unit just isn't turned on). Confirmed against real hardware (SN
+  // 2629YW10JZ, 2026-07-24), "show /SYS" -> Properties -> "power_state = On" (or "Off").
+  const sysOut = await runIlomSession([
+    { line: 'show /SYS', delayAfterMs: 3000 },
+    { line: 'exit', delayAfterMs: 1500 },
+  ], ilomIp, ilomUser, ilomPassword, 20000);
+  console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
+  const powerStateMatch = sysOut.match(/power_state\s*=\s*(\S+)/i);
+  if (powerStateMatch && !/^on$/i.test(powerStateMatch[1])) {
+    return {
+      faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
+      raw: `${eveOut}\n${sysOut}`,
+    };
+  }
+
   const powerOut = await runIlomSession([
     { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
     { line: 'hwdiag power get amps all', delayAfterMs: 8000 },
@@ -590,7 +608,7 @@ async function runPowerOnCheck(serialNumber) {
 
   const result = parseHwdiagPowerFaults(powerOut);
   console.log('[diagnose] POWER_ON check parsed faults:', JSON.stringify(result.faults));
-  return { faults: result.faults, raw: `${eveOut}\n${powerOut}` };
+  return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}` };
 }
 
 // Targeted flow for a POWER_ON failure paired with a remote HOSTNIC firmware-update failure in
