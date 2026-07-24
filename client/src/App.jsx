@@ -5,6 +5,7 @@ import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
 import NavMenu from './components/NavMenu/NavMenu';
 import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
+import { mergeFaultsClient } from './utils/mergeFaults';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
@@ -78,26 +79,46 @@ function App() {
       setLoadingNotice('Running diagnostics…');
     }
 
+    // Accumulated locally (not just via setFaults, which is async) so the final summary below —
+    // logPanel's loggable parts, the "Faults detected" status text — can be computed the instant
+    // the stream ends, against the complete picture, without waiting on an extra render cycle.
+    let accumulated = EMPTY_FAULTS;
+    let doneEvent = null;
     try {
-      const result = await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink);
-      const f = result.faults ?? EMPTY_FAULTS;
-      setFaults(f);
-      setFlowNotice(result.defaultFlowNotice || '');
-      const hasFaults = f.components.length > 0 || (f.genericErrors || []).length > 0;
-      // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
-      // short-circuit (a matched targeted check, a forced check, or faults already documented in
-      // a Jira ticket's comments) — the ILOM SSH chain was never opened for it.
-      const isTargetedSource = !!result.source && !result.source.startsWith('default-ilom-chain');
-      const isCheckMatch = result.source?.includes(' -> ');
-      const via = isTargetedSource ? ` (via ${isCheckMatch ? result.source.split(' -> ')[0] : result.source}, ILOM not checked)` : '';
-      setDiagnoseStatus(!hasFaults
-        ? 'No open problems detected.'
-        : `Faults detected${via}: ${f.components.length > 0 ? f.components.join(', ') : 'see error below'}`);
+      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, (event) => {
+        if (event.type === 'partial') {
+          // Merged into the running total and shown immediately — the default ILOM chain runs
+          // many commands unconditionally and can take a while end-to-end, so faults already found
+          // (e.g. a DIMM training failure from fmadm) show up on the chassis right away instead of
+          // waiting on every remaining command, including any that time out, to finish first.
+          accumulated = mergeFaultsClient(accumulated, event.faults);
+          setFaults(accumulated);
+          setLoadingNotice(`Checking ${event.label}…`);
+        } else if (event.type === 'fatal') {
+          setDiagnoseError(event.error);
+        } else if (event.type === 'done') {
+          doneEvent = event;
+        }
+      });
 
-      const parts = getLoggableParts(f);
-      if (parts.length > 0) {
-        const checkName = isCheckMatch ? result.source.split(' -> ')[1] : undefined;
-        setLogPanel({ serialNumber: formData.sn, parts, checkName, source: result.source });
+      if (doneEvent) {
+        setFlowNotice(doneEvent.defaultFlowNotice || '');
+        const hasFaults = accumulated.components.length > 0 || (accumulated.genericErrors || []).length > 0;
+        // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
+        // short-circuit (a matched targeted check, a forced check, or faults already documented in
+        // a Jira ticket's comments) — the ILOM SSH chain was never opened for it.
+        const isTargetedSource = !!doneEvent.source && !doneEvent.source.startsWith('default-ilom-chain');
+        const isCheckMatch = doneEvent.source?.includes(' -> ');
+        const via = isTargetedSource ? ` (via ${isCheckMatch ? doneEvent.source.split(' -> ')[0] : doneEvent.source}, ILOM not checked)` : '';
+        setDiagnoseStatus(!hasFaults
+          ? 'No open problems detected.'
+          : `Faults detected${via}: ${accumulated.components.length > 0 ? accumulated.components.join(', ') : 'see error below'}`);
+
+        const parts = getLoggableParts(accumulated);
+        if (parts.length > 0) {
+          const checkName = isCheckMatch ? doneEvent.source.split(' -> ')[1] : undefined;
+          setLogPanel({ serialNumber: formData.sn, parts, checkName, source: doneEvent.source });
+        }
       }
     } catch (e) {
       setDiagnoseError(e.message || 'Diagnosis failed');

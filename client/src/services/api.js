@@ -59,12 +59,42 @@ export const validateSerialNumber = async (sn) => {
   return handleResponse(response, 'Validation request failed');
 };
 
-export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink) => {
+// GET /servers/:id/diagnose streams newline-delimited JSON instead of one big JSON body — the
+// default ILOM chain runs many commands unconditionally, and a single slow/timing-out one used to
+// abort the whole response, discarding every fault already found. onEvent(event) is called for
+// each line as it arrives, in order; event.type is one of:
+//   'partial' {label, faults, raw}        — merge `faults` into the running total immediately
+//   'fatal'   {error}                     — unrecoverable (e.g. ILOM down); stream ends after this
+//   'done'    {source, defaultFlowNotice} — stream finished, these are the final status fields
+export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink, onEvent) => {
   const params = new URLSearchParams({ serialNumber });
   if (ilomIp) params.set('ilomIp', ilomIp);
   if (jiraLink) params.set('jiraLink', jiraLink);
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
-  return handleResponse(response, 'Diagnose failed');
+  if (!response.ok) {
+    // Only the pre-stream validation checks (missing/invalid serial number) respond this way —
+    // every other failure mode is a {type:'fatal'} line in the stream body instead, since by the
+    // time those can happen the response headers are already committed to the ndjson content type.
+    let data = null;
+    try { data = await response.json(); } catch { /* non-JSON body */ }
+    throw new Error(data?.error || `Diagnose failed (HTTP ${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line.trim()) onEvent(JSON.parse(line));
+    }
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer));
 };
 
 // Instant (cache-only, no ILOM SSH) read of what diagnoseServer will do for this SN — lets the

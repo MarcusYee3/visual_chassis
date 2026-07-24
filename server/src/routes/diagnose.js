@@ -86,29 +86,6 @@ function runIlomSession(commands, ilomIp, ilomUser, ilomPassword, timeoutMs = 45
   });
 }
 
-// Merges any number of faults objects into one, unioning each array field (deduped) rather than
-// stopping at the first non-empty result — every diagnostic tier runs unconditionally and its
-// findings are combined, so a unit with e.g. both a fabric-test PCIe failure and a GXR3 firmware
-// failure shows both instead of only whichever tier ran first.
-function mergeFaults(...faultsList) {
-  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
-  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set(), dimmIds: new Set() };
-
-  for (const f of faultsList) {
-    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']) {
-      for (const id of f[key] || []) {
-        if (!seen[key].has(id)) { seen[key].add(id); merged[key].push(id); }
-      }
-    }
-    for (const p of f.pcieFaults || []) {
-      const key = p.resource || `${p.iou}-${p.pcie}`;
-      if (!seen.pcieFaults.has(key)) { seen.pcieFaults.add(key); merged.pcieFaults.push(p); }
-    }
-    for (const g of f.genericErrors || []) merged.genericErrors.push(g);
-  }
-  return merged;
-}
-
 function parseIlomProblems(output) {
   const faults = {
     components: [],
@@ -1090,6 +1067,40 @@ router.get('/', async (req, res) => {
     return res.status(400).json({ error: 'Invalid serial number format' });
   }
 
+  // Streams newline-delimited JSON events instead of collecting every result before responding
+  // once. The default chain below now runs every diagnostic command unconditionally (per an
+  // earlier change), and a single slow/timing-out one (confirmed on real hardware:
+  // GXR3_update_check hanging past localExec's 30s timeout, SN 2630YW1049, 2026-07-24) used to
+  // throw past every step below and land in the catch block, returning a 500 that discarded every
+  // fault already found (e.g. a DIMM training failure fmadm had already surfaced). Now each step
+  // reports its own fault fragment the moment it finishes — success or failure — and the chain
+  // keeps going regardless, so the client can merge results in live instead of waiting on (and
+  // being at the mercy of) the single slowest/flakiest command in the whole chain. NDJSON over a
+  // chunked response rather than SSE/WebSocket: same-origin, one-directional, and this keeps
+  // client-side parsing to "split on \n, JSON.parse each line" with no extra protocol.
+  //   {type:'partial', label, faults, raw} — merge `faults` into the running total immediately
+  //   {type:'fatal', error}                — unrecoverable (e.g. ILOM down); stream ends after this
+  //   {type:'done', source, defaultFlowNotice} — stream finished; these are the final status fields
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  const sendPartial = (label, faults, raw) => res.write(`${JSON.stringify({ type: 'partial', label, faults, raw })}\n`);
+  const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
+  const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  // Runs one targeted check and reports it as a partial either way — a thrown error (e.g. a
+  // localExec/runIlomSession timeout) becomes a genericErrors fragment naming the check instead of
+  // aborting the rest of the chain, since every other check's findings are still valid and worth
+  // keeping.
+  const runAndReportCheck = async (checkName, targetedCheck) => {
+    try {
+      const result = await targetedCheck(serialNumber);
+      sendPartial(checkName, result.faults, result.raw);
+    } catch (err) {
+      console.error(`[diagnose] targeted check ${checkName} failed for ${serialNumber}:`, err.message);
+      sendPartial(checkName, { ...emptyFaults, genericErrors: [`${checkName} check failed: ${err.message}`] }, err.message);
+    }
+  };
+
   try {
     // ?forceCheck=<checkName> runs a specific targeted check directly, regardless of what the
     // mfg-collector cache currently says (or whether the SN is in it at all) — the cache is a
@@ -1099,11 +1110,13 @@ router.get('/', async (req, res) => {
     if (forceCheck) {
       const targetedCheck = MFG_COLLECTOR_TARGETED_CHECKS[forceCheck];
       if (!targetedCheck) {
-        return res.status(400).json({ error: `No targeted check mapped for "${forceCheck}". Known checks: ${Object.keys(MFG_COLLECTOR_TARGETED_CHECKS).join(', ')}` });
+        sendFatal(`No targeted check mapped for "${forceCheck}". Known checks: ${Object.keys(MFG_COLLECTOR_TARGETED_CHECKS).join(', ')}`);
+        return res.end();
       }
       console.log(`[diagnose] forceCheck=${forceCheck} set, running its targeted check directly for ${serialNumber}, bypassing mfg-collector entirely`);
-      const { faults, raw } = await targetedCheck(serialNumber);
-      return res.json({ faults, raw, source: `forced -> ${forceCheck}` });
+      await runAndReportCheck(forceCheck, targetedCheck);
+      sendDone({ source: `forced -> ${forceCheck}` });
+      return res.end();
     }
 
     // Step 0: check the Jira ticket (if supplied) first, then the mfg-collector cache (populated
@@ -1135,12 +1148,15 @@ router.get('/', async (req, res) => {
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
     if (resolvedFaults) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — fault(s) already documented in the ticket's comments, using them directly instead of opening an ILOM session`);
-      return res.json({ faults: resolvedFaults, raw: resolvedRaw, source: defaultFlowSourceTag });
+      sendPartial(defaultFlowSourceTag, resolvedFaults, resolvedRaw);
+      sendDone({ source: defaultFlowSourceTag });
+      return res.end();
     }
     if (targetedCheckName) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
-      const { faults, raw } = await MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName](serialNumber);
-      return res.json({ faults, raw, source: defaultFlowSourceTag });
+      await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
+      sendDone({ source: defaultFlowSourceTag });
+      return res.end();
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
 
@@ -1166,14 +1182,16 @@ router.get('/', async (req, res) => {
     console.log('[diagnose] eve_ip raw output:\n', eveOut);
     const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
     if (!ilomRowMatch) {
-      console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — returning 400`);
-      return res.status(400).json({ error: `No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}` });
+      console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — sending fatal`);
+      sendFatal(`No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}`);
+      return res.end();
     }
     const [, eveIlomIp, ilomStatus] = ilomRowMatch;
     console.log(`[diagnose] eve_ip: ILOM row matched — IP ${eveIlomIp}, status "${ilomStatus}"`);
     if (!/^up$/i.test(ilomStatus)) {
-      console.log(`[diagnose] eve_ip: ILOM status "${ilomStatus}" is not up — returning 400, skipping the SSH chain entirely`);
-      return res.status(400).json({ error: `ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} (IP ${eveIlomIp}) by eve_ip — cannot run diagnostics until it is back up` });
+      console.log(`[diagnose] eve_ip: ILOM status "${ilomStatus}" is not up — sending fatal, skipping the SSH chain entirely`);
+      sendFatal(`ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} (IP ${eveIlomIp}) by eve_ip — cannot run diagnostics until it is back up`);
+      return res.end();
     }
     const ilomIp = ilomIpParam || eveIlomIp;
     console.log('[diagnose] ILOM IP:', ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
@@ -1190,16 +1208,26 @@ router.get('/', async (req, res) => {
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
 
-    const ilomOut = await runIlomSession(
-      [
-        { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
-        { line: 'exit', delayAfterMs: 1500 },
-      ],
-      ilomIp, ilomUser, ilomPassword, 30000
-    );
-    console.log('[diagnose] ILOM raw output:\n', ilomOut);
-    const openProblemsParsed = parseIlomProblems(ilomOut);
-    console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
+    // Each of Step 2/3's SSH sessions below is wrapped in its own try/catch and reported as a
+    // partial either way, same reasoning as runAndReportCheck above — a timeout on any one of them
+    // (Open_Problems, fmadm, or the hwdiag session) must not discard whatever the others already
+    // found or are still about to find.
+    try {
+      const ilomOut = await runIlomSession(
+        [
+          { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
+          { line: 'exit', delayAfterMs: 1500 },
+        ],
+        ilomIp, ilomUser, ilomPassword, 30000
+      );
+      console.log('[diagnose] ILOM raw output:\n', ilomOut);
+      const openProblemsParsed = parseIlomProblems(ilomOut);
+      console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
+      sendPartial('Open_Problems', openProblemsParsed.faults, ilomOut);
+    } catch (err) {
+      console.error('[diagnose] Open_Problems check failed for', serialNumber, ':', err.message);
+      sendPartial('Open_Problems', { ...emptyFaults, genericErrors: [`Open_Problems check failed: ${err.message}`] }, err.message);
+    }
 
     // Step 3: run every remaining diagnostic tier unconditionally and merge all findings, rather
     // than stopping at the first tier that finds something — a unit can have more than one real
@@ -1216,81 +1244,89 @@ router.get('/', async (req, res) => {
     // faulted, instead of only the ones genuinely at 0.00 deg C.
     console.log('[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally');
 
-    const fmadmOut = await runIlomSession([
-      { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
-      { line: 'fmadm faulty -a', delayAfterMs: 10000 },
-      { line: 'exit', delayAfterMs: 1500 },
-    ], ilomIp, ilomUser, ilomPassword, 45000);
-    console.log('[diagnose] fmadm raw output:\n', fmadmOut);
-    const fmadmParsed = parseIlomProblems(fmadmOut);
-    console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+    try {
+      const fmadmOut = await runIlomSession([
+        { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
+        { line: 'fmadm faulty -a', delayAfterMs: 10000 },
+        { line: 'exit', delayAfterMs: 1500 },
+      ], ilomIp, ilomUser, ilomPassword, 45000);
+      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
+      const fmadmParsed = parseIlomProblems(fmadmOut);
+      console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+      sendPartial('fmadm', fmadmParsed.faults, fmadmOut);
+    } catch (err) {
+      console.error('[diagnose] fmadm check failed for', serialNumber, ':', err.message);
+      sendPartial('fmadm', { ...emptyFaults, genericErrors: [`fmadm check failed: ${err.message}`] }, err.message);
+    }
 
-    const hwdiagOut = await runIlomSession([
-      { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
-      // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI reference
-      // wiring vs. what's actually connected) is what catches a swapped IOU PCIe/power cable, the
-      // same class of fault previously only visible via a technician's pasted session in a Jira
-      // ticket (see parseHwdiagIoCableFaults). No real-hardware timing confirmation yet for this
-      // one, so 8000ms is a starting estimate — bump it if it turns out to get cut off the same
-      // way "hwdiag temp get all" did below before its delay was corrected.
-      { line: 'hwdiag io config', delayAfterMs: 8000 },
-      { line: 'hwdiag fan info', delayAfterMs: 5000 },
-      // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
-      // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
-      // trailing "exit" landed while the diag shell was still busy and cut the sensor table
-      // off entirely (only the header printed before the connection closed).
-      { line: 'hwdiag temp get all', delayAfterMs: 15000 },
-      // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
-      // cached values like the two commands above — no real-hardware timing confirmation for
-      // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
-      // to get cut off the same way temp get all did.
-      { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
-      { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
-      { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-    ], ilomIp, ilomUser, ilomPassword, 85000);
-    console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
+    try {
+      const hwdiagOut = await runIlomSession([
+        { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+        // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI reference
+        // wiring vs. what's actually connected) is what catches a swapped IOU PCIe/power cable, the
+        // same class of fault previously only visible via a technician's pasted session in a Jira
+        // ticket (see parseHwdiagIoCableFaults). No real-hardware timing confirmation yet for this
+        // one, so 8000ms is a starting estimate — bump it if it turns out to get cut off the same
+        // way "hwdiag temp get all" did below before its delay was corrected.
+        { line: 'hwdiag io config', delayAfterMs: 8000 },
+        { line: 'hwdiag fan info', delayAfterMs: 5000 },
+        // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
+        // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
+        // trailing "exit" landed while the diag shell was still busy and cut the sensor table
+        // off entirely (only the header printed before the connection closed).
+        { line: 'hwdiag temp get all', delayAfterMs: 15000 },
+        // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
+        // cached values like the two commands above — no real-hardware timing confirmation for
+        // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
+        // to get cut off the same way temp get all did.
+        { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
+        { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
+        { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
+      ], ilomIp, ilomUser, ilomPassword, 85000);
+      console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
-    const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
-    console.log('[diagnose] hwdiag io config parsed faults:', JSON.stringify(ioConfigParsed.faults));
-    const fanParsed = parseHwdiagFanInfo(hwdiagOut);
-    console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
-    const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
-    console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
-    const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
-    console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
+      const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
+      console.log('[diagnose] hwdiag io config parsed faults:', JSON.stringify(ioConfigParsed.faults));
+      sendPartial('hwdiag io config', ioConfigParsed.faults, hwdiagOut);
+      const fanParsed = parseHwdiagFanInfo(hwdiagOut);
+      console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
+      sendPartial('hwdiag fan info', fanParsed.faults, hwdiagOut);
+      const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
+      console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
+      sendPartial('hwdiag temp get all', tempParsed.faults, hwdiagOut);
+      const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
+      console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
+      sendPartial('hwdiag system fabric test all', fabricParsed.faults, hwdiagOut);
+    } catch (err) {
+      console.error('[diagnose] hwdiag check failed for', serialNumber, ':', err.message);
+      sendPartial('hwdiag', { ...emptyFaults, genericErrors: [`hwdiag check failed: ${err.message}`] }, err.message);
+    }
 
-    let raw = `${ilomOut}\n${fmadmOut}\n${hwdiagOut}`;
-    const targetedFaultsList = [];
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
       if (excludedTargetedChecks.includes(checkName)) {
         console.log(`[diagnose] skipping targeted check ${checkName} for ${serialNumber} — only runs on a specific mfg-collector match or ?forceCheck=, not as part of the default chain`);
         continue;
       }
       console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
-      const result = await targetedCheck(serialNumber);
-      raw += `\n${result.raw}`;
-      targetedFaultsList.push(result.faults);
-      console.log(`[diagnose] ${checkName} parsed faults:`, JSON.stringify(result.faults));
+      await runAndReportCheck(checkName, targetedCheck);
     }
 
-    const mergedFaults = mergeFaults(
-      openProblemsParsed.faults, fmadmParsed.faults, ioConfigParsed.faults, fanParsed.faults, tempParsed.faults, fabricParsed.faults, ...targetedFaultsList
-    );
-    console.log('[diagnose] merged faults:', JSON.stringify(mergedFaults));
-    const parsed = {
-      faults: mergedFaults,
-      raw,
+    sendDone({
       // defaultFlowNotice is a status update ("running the default chain because X"), not a
       // fault — it must stay out of genericErrors (which the UI renders as red fault banners)
       // and be surfaced separately so the frontend can show it as a neutral status line instead.
       ...(defaultFlowNotice ? { defaultFlowNotice } : {}),
       ...(defaultFlowSourceTag ? { source: `default-ilom-chain (${defaultFlowSourceTag})` } : {}),
-    };
-
-    res.json(parsed);
+    });
+    res.end();
   } catch (err) {
     console.error('[diagnose]', err.message);
-    res.status(500).json({ error: err.message });
+    if (res.headersSent) {
+      sendFatal(err.message);
+      res.end();
+    } else {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 

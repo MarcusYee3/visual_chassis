@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import styles from './Note.module.css';
 import { diagnoseServer } from '../../services/api';
+import { mergeFaultsClient } from '../../utils/mergeFaults';
+
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 function NoteEntry({ record, onHighlight, serialNumber }) {
   const [expanded, setExpanded] = useState(false);
@@ -19,8 +22,14 @@ function NoteEntry({ record, onHighlight, serialNumber }) {
     if (isFail && serialNumber) {
       setDiagnosing(true);
       try {
-        const result = await diagnoseServer('server-1', serialNumber);
-        onHighlight?.({ faults: result.faults });
+        // diagnoseServer now streams one partial fault fragment per command as it completes
+        // (see services/api.js) rather than one final blob — accumulate them the same way App.jsx
+        // does and only highlight once the stream ends, so this still reads as one atomic result.
+        let accumulated = EMPTY_FAULTS;
+        await diagnoseServer('server-1', serialNumber, undefined, undefined, (event) => {
+          if (event.type === 'partial') accumulated = mergeFaultsClient(accumulated, event.faults);
+        });
+        onHighlight?.({ faults: accumulated });
       } catch (e) {
         console.error('Diagnose failed:', e);
       } finally {
