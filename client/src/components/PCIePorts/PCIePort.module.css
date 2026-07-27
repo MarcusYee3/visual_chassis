@@ -89,7 +89,13 @@
 }
 
 .faulted {
-  border: 1px solid rgba(255, 68, 68, 0.5);
+  border: 1px solid #ff4444;
+  animation: pciePortFaultPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pciePortFaultPulse {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 0 12px rgba(255, 68, 68, 0.55), 0 0 22px rgba(255, 68, 68, 0.25); }
+  50%       { box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 0 20px rgba(255, 68, 68, 0.9), 0 0 38px rgba(255, 68, 68, 0.45); }
 }
 
 .faulted .label {
