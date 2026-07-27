@@ -64,9 +64,14 @@ const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 
 const prefersReducedMotion = typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-// Real IOU numbers carrying a GXR3 retimer card (same 8 IOUs the OSFP boards use, 1,2,4,5,6,7,9,10
-// — 3 and 8 don't have one), per gxr3_fw_update_check's own output.
-const IOU_GXR3_NUMBERS = [1, 2, 4, 5, 6, 7, 9, 10];
+// Same physical OSFP-slot -> IOU convention as server/src/routes/diagnose.js's own
+// OSFP_SLOT_TO_IOU (which parses lionking_OSFP.py's loopback link results) — each numbered OSFP
+// slot is one end of a physical loopback cable pairing two IOU ports:
+//   slot 1 = IOU 6     slot 2 = IOU 1     slot 3 = IOU 7     slot 4 = IOU 2
+//   slot 5 = IOU 9     slot 6 = IOU 4     slot 7 = IOU 10    slot 8 = IOU 5
+// The Retimer BD's 8 GXR3 retimer cards live on these same 8 IOUs, so they're labeled/ordered by
+// OSFP slot here too (see the Retimer BD section below) rather than by raw IOU number.
+const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
 
 // Each CPU (P0/P1) carries 16 DIMM slots (D0-D15) across 4 memory controllers of 4 DIMMs each,
 // per the real captured "CPU <p> Memory Controller <m>" hwdiag fabric-test output — see
@@ -81,6 +86,9 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const [pciePorts, setPciePorts] = useState({});
   const [expandedMb, setExpandedMb] = useState(false);
   const [psuPorts, setPsuPorts] = useState([]);
+  // Keyed by OSFP slot (1-8) — toggles that retimer's own cable-link reveal (see the Retimer BD
+  // section below), independent of the GBB Tray's own OSFP-module cable-pair expansion above.
+  const [expandedRetimerCable, setExpandedRetimerCable] = useState({});
   const prevFaults = useRef(EMPTY_FAULTS);
 
   const has = (comp) => faults.components.includes(comp);
@@ -105,6 +113,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   }, [faults]);
 
   const handleMbClick = () => setExpandedMb(!expandedMb);
+
+  const handleRetimerClick = (slot) => setExpandedRetimerCable((prev) => ({ ...prev, [slot]: !prev[slot] }));
 
   const handleOsfpClick = (osfpId) => {
     if (expandedOsfp[osfpId]) {
@@ -280,23 +290,49 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               </div>
             </div>
 
-            {/* Center: Retimer BD */}
+            {/* Center: Retimer BD — the 8 GXR3 retimer cards are labeled/ordered by OSFP slot
+                (see OSFP_SLOT_TO_IOU) rather than raw IOU number, matching the GBB Tray's own
+                OSFP numbering. Clicking one reveals a cable-link tag naming its actual IOU, same
+                pairing the GBB Tray's own cable view uses. PCIE SW 1-8 get their own single row,
+                no longer paired one-per-retimer. */}
             <div style={{ backgroundImage: 'radial-gradient(circle at 3.5px 3.5px, rgba(200,220,50,0.08) 0.6px, transparent 0.6px), repeating-linear-gradient(90deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 7px), linear-gradient(180deg, #22280f 0%, #161a08 100%)', backgroundSize: '7px 7px, 7px 7px, 100% 100%', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px', width: '100%' }}>
-                {IOU_GXR3_NUMBERS.map((iou, idx) => {
-                  const switchNum = idx + 1;
-                  const switchFaulted = (faults.pcieSwitchIds || []).includes(switchNum);
-                  return (
-                    <div key={iou} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                      <GXR3VRetimer id={`retimer-${iou}`} name={`IOU ${iou} GXR3`}
-                        onClick={() => {}}
-                        faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
-                      <PCIeSwitch id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum}`}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px' }}>
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((slot) => {
+                    const iou = OSFP_SLOT_TO_IOU[slot];
+                    return (
+                      <div key={slot} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <GXR3VRetimer id={`retimer-${iou}`} name={`OSFP ${slot}`}
+                          onClick={() => handleRetimerClick(slot)}
+                          faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
+                        {expandedRetimerCable[slot] && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
+                            title={`OSFP ${slot} <-> IOU ${iou}`}>
+                            <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+                            <div style={{
+                              fontFamily: "'JetBrains Mono', monospace", fontSize: '6px', fontWeight: 700,
+                              letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
+                              border: '1px solid #333', borderRadius: '2px', padding: '1px 3px',
+                              whiteSpace: 'nowrap',
+                            }}>
+                              IOU {iou}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px' }}>
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((switchNum) => {
+                    const switchFaulted = (faults.pcieSwitchIds || []).includes(switchNum);
+                    return (
+                      <PCIeSwitch key={switchNum} id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum}`}
                         faulted={switchFaulted}
                         title={`PCIE_SW${switchNum}${switchFaulted ? ' — FAILED' : ''}`} />
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
               <div style={{ textAlign: 'center' }}>
                 <div style={{ ...fontStyle, fontSize: '9px', color: '#8a9a45' }}>8x GXR3V2</div>
