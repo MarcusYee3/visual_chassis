@@ -540,6 +540,28 @@ function parseHwdiagPowerFaults(output) {
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
 
+  // A PSU's 12V rail legitimately reads 0A/0V whenever nothing is drawing load on it — which
+  // happens not just when the PSU itself is dead, but whenever the whole host is powered off (both
+  // PSUs would then read 0 on the shared main rail even though they're perfectly healthy). Cross-
+  // check against the motherboard's own CPU core voltage rails, also in this same "hwdiag power
+  // get volts all" output, before blaming a PSU. Confirmed against real hardware, SN 2629YW10AD,
+  // 2026-07-27: PS1 read 12.12V/0.00A (looks like a dead PSU in isolation) while every
+  // VDD_CORE<n>_CPU<n>_INF rail read exactly 0.00V, and a separate "hwdiag power info all" (richer
+  // output this app doesn't run) confirmed those same rails' own Fault Status Word as "[06] OFF -
+  // Unit is not providing power" — i.e. the host wasn't on, not a PSU failure. This is a second
+  // line of defense behind runPowerOnCheck's own /SYS power_state gate (which should normally catch
+  // this first) — e.g. if bypassPowerState was used, or power_state doesn't yet reflect reality.
+  const coreVoltRe = /\/SYS\/MB\/VDD_CORE\d_CPU\d_INF\s*:\s*([\d.]+)V/gi;
+  const coreVolts = [];
+  let cvm;
+  while ((cvm = coreVoltRe.exec(output)) !== null) coreVolts.push(parseFloat(cvm[1]));
+  if (coreVolts.length > 0 && coreVolts.every((v) => v === 0)) {
+    faults.genericErrors.push(
+      'POWER_ON check: motherboard CPU core voltage rails (VDD_CORE*) all read 0V — the host is not powered on, so PS0/PS1 reading 0A/0V here is expected and not a PSU fault'
+    );
+    return { faults, raw: output };
+  }
+
   const flagPsu = (psuNumStr, valueStr, unit, resource) => {
     if (parseFloat(valueStr) !== 0) return;
     const psuNum = parseInt(psuNumStr, 10);
