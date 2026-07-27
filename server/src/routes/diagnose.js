@@ -536,7 +536,7 @@ function parseHwdiagPowerFaults(output) {
 // amps all" -> "hwdiag power get volts all", then flag PS0/PS1 if either reports 0. Unlike
 // lionking_OSFP.py/GXR3_update_check (external scripts run locally), this one drives the ILOM
 // session directly, the same way the default chain's own hwdiag commands do.
-async function runPowerOnCheck(serialNumber) {
+async function runPowerOnCheck(serialNumber, options = {}) {
   console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> show /SYS -> hwdiag power get amps/volts all`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
@@ -561,6 +561,10 @@ async function runPowerOnCheck(serialNumber) {
   // parseHwdiagPowerFaults would otherwise misreport as a genuine PS0/PS1 delivery fault instead
   // of what it actually is (the unit just isn't turned on). Confirmed against real hardware (SN
   // 2629YW10JZ, 2026-07-24), "show /SYS" -> Properties -> "power_state = On" (or "Off").
+  //
+  // options.bypassPowerState lets the user override this and run the power-rail check anyway —
+  // e.g. a technician who just flipped the unit on and knows the ILOM's power_state property
+  // hasn't caught up yet, or wants the rail readings regardless of what /SYS currently reports.
   const sysOut = await runIlomSession([
     { line: 'show /SYS', delayAfterMs: 3000 },
     { line: 'exit', delayAfterMs: 1500 },
@@ -568,10 +572,13 @@ async function runPowerOnCheck(serialNumber) {
   console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
   const powerStateMatch = sysOut.match(/power_state\s*=\s*(\S+)/i);
   if (powerStateMatch && !/^on$/i.test(powerStateMatch[1])) {
-    return {
-      faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
-      raw: `${eveOut}\n${sysOut}`,
-    };
+    if (!options.bypassPowerState) {
+      return {
+        faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
+        raw: `${eveOut}\n${sysOut}`,
+      };
+    }
+    console.log(`[diagnose] POWER_ON check: /SYS power_state is "${powerStateMatch[1]}" but bypassPowerState was requested — running the power-rail check anyway`);
   }
 
   const powerOut = await runIlomSession([
@@ -598,7 +605,7 @@ async function runPowerOnCheck(serialNumber) {
 // doesn't explain it (HOSTNIC row missing or reporting up) does this fall through to the normal
 // runPowerOnCheck flow — the power-rail check still needs to run in that case, since the pairing
 // alone doesn't rule out a real power-rail fault.
-async function runPowerOnHostnicPairedCheck(serialNumber) {
+async function runPowerOnHostnicPairedCheck(serialNumber, options = {}) {
   console.log(`[diagnose] running CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired flow for ${serialNumber}: eve_ip HOSTNIC status first, then power-rail check if needed`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
@@ -621,7 +628,7 @@ async function runPowerOnHostnicPairedCheck(serialNumber) {
 
   // HOSTNIC is up (or its row wasn't found at all) — the down-cable theory doesn't hold, so run
   // the real power-rail check same as an unpaired CHECK_POWER_ON would.
-  const powerResult = await runPowerOnCheck(serialNumber);
+  const powerResult = await runPowerOnCheck(serialNumber, options);
   return { faults: powerResult.faults, raw: `${eveOut}\n${powerResult.raw}` };
 }
 
@@ -1060,7 +1067,7 @@ router.get('/precheck', async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -1087,13 +1094,18 @@ router.get('/', async (req, res) => {
   const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  // ?bypassPowerState=1 lets the user skip the POWER_ON check's own /SYS power_state gate (see
+  // runPowerOnCheck) and get the hwdiag power-rail reading regardless of what /SYS currently
+  // reports. Passed unconditionally to every targeted check below — every check besides
+  // runPowerOnCheck/runPowerOnHostnicPairedCheck simply ignores the extra options argument.
+  const checkOptions = { bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true' };
   // Runs one targeted check and reports it as a partial either way — a thrown error (e.g. a
   // localExec/runIlomSession timeout) becomes a genericErrors fragment naming the check instead of
   // aborting the rest of the chain, since every other check's findings are still valid and worth
   // keeping.
   const runAndReportCheck = async (checkName, targetedCheck) => {
     try {
-      const result = await targetedCheck(serialNumber);
+      const result = await targetedCheck(serialNumber, checkOptions);
       sendPartial(checkName, result.faults, result.raw);
     } catch (err) {
       console.error(`[diagnose] targeted check ${checkName} failed for ${serialNumber}:`, err.message);

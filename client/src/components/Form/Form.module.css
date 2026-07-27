@@ -105,6 +105,29 @@
   cursor: not-allowed;
 }
 
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7a8bab;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #60a5fa;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* Stacked (error above button, both full-width) rather than side-by-side, matching the form's
    new single-column, vertical-rectangle shape. */
 .footer {

@@ -5,13 +5,16 @@ import { validateSerialNumber } from "../../services/api";
 const JIRA_ISSUE_BASE_URL = "https://jira.synnex.com/rest/api/2/issue/";
 
 const ServerForm = ({ onSubmit }) => {
-    const [serverData, setServerData] = useState({ sn: "", wo: "", jiraTicket: "" });
+    const [serverData, setServerData] = useState({ sn: "", wo: "", jiraTicket: "", bypassPowerState: false });
     const [error, setError] = useState("");
     const [validating, setValidating] = useState(false);
 
     const handleChange = (e) => {
-        const { name, value } = e.target;
-        setServerData((prev) => ({ ...prev, [name]: (name === "sn" || name === "jiraTicket") ? value.trim() : value }));
+        const { name, value, type, checked } = e.target;
+        setServerData((prev) => ({
+            ...prev,
+            [name]: type === "checkbox" ? checked : ((name === "sn" || name === "jiraTicket") ? value.trim() : value),
+        }));
         setError("");
     };
 
@@ -19,7 +22,8 @@ const ServerForm = ({ onSubmit }) => {
         event.preventDefault();
         const isConfirm = window.confirm(
             `Please confirm server detail: \n\nSN: ${serverData.sn}\nWO: ${serverData.wo}` +
-            (serverData.jiraTicket ? `\nJira Ticket: ${serverData.jiraTicket}` : "")
+            (serverData.jiraTicket ? `\nJira Ticket: ${serverData.jiraTicket}` : "") +
+            (serverData.bypassPowerState ? `\nBypass power-state-off check: YES` : "")
         );
         if (!isConfirm) return;
 
@@ -72,6 +76,18 @@ const ServerForm = ({ onSubmit }) => {
                     />
                 </label>
             </div>
+
+            <label className={styles.checkboxLabel} title="Skip the POWER_ON check's /SYS power_state gate and read the power rails regardless of whether the unit currently reports powered off">
+                <input
+                    className={styles.checkbox}
+                    type="checkbox"
+                    name="bypassPowerState"
+                    checked={serverData.bypassPowerState}
+                    onChange={handleChange}
+                    disabled={validating}
+                />
+                Bypass power-state-off check
+            </label>
 
             <div className={styles.footer}>
                 {error && <p className={styles.error}>{error}</p>}

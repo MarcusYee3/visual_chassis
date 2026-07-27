@@ -26,7 +26,7 @@ function NoteEntry({ record, onHighlight, serialNumber }) {
         // (see services/api.js) rather than one final blob — accumulate them the same way App.jsx
         // does and only highlight once the stream ends, so this still reads as one atomic result.
         let accumulated = EMPTY_FAULTS;
-        await diagnoseServer('server-1', serialNumber, undefined, undefined, (event) => {
+        await diagnoseServer('server-1', serialNumber, undefined, undefined, false, (event) => {
           if (event.type === 'partial') accumulated = mergeFaultsClient(accumulated, event.faults);
         });
         onHighlight?.({ faults: accumulated });

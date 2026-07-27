@@ -85,7 +85,7 @@ function App() {
     let accumulated = EMPTY_FAULTS;
     let doneEvent = null;
     try {
-      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, (event) => {
+      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, formData.bypassPowerState, (event) => {
         if (event.type === 'partial') {
           // Merged into the running total and shown immediately — the default ILOM chain runs
           // many commands unconditionally and can take a while end-to-end, so faults already found
