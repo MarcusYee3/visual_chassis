@@ -238,17 +238,19 @@ function isReducedFanChassis(hwdiagOut) {
   return /Chassis type:\s*2U/i.test(hwdiagOut);
 }
 
-// FM2 and PS2/PS3 are bays a 2U Flex chassis simply doesn't populate — reporting "Not Present" on
-// this chassis type is the expected, fully-healthy configuration, not a fault. Confirmed against
-// real hardware, SN 2630YW1027, 2026-07-23: FM0/FM1/FM2 all "Present", PS0/PS1 "Present", PS2/PS3
-// "Not Present" (2 PSUs, not the larger chassis's 4) on a unit with no other reported problems.
-const REDUCED_CHASSIS_OPTIONAL_BAYS = new Set(['FM2', 'PS2', 'PS3']);
+// PS2/PS3 are bays a 2U Flex chassis simply doesn't populate (only 2 PSUs, not the larger
+// chassis's 4) — reporting "Not Present" on this chassis type is the expected, fully-healthy
+// configuration, not a fault. Confirmed against real hardware, SN 2630YW1027, 2026-07-23: PS0/PS1
+// "Present", PS2/PS3 "Not Present" on a unit with no other reported problems. FM2 is *not* in this
+// set — unlike PS2/PS3, this chassis is expected to carry all three fan modules (FM0/FM1/FM2), so
+// FM2 "Not Present" is a real fault, not a normal reduced-population bay.
+const REDUCED_CHASSIS_OPTIONAL_BAYS = new Set(['PS2', 'PS3']);
 
 // hwdiag fan info prints one line per fan ("FM<n>") and PSU ("PS<n>"), e.g.:
 //   FM1    -  Present
 //   FM21   - Not Readable
 //   PS1    -  Present
-// Anything whose status isn't exactly "Present" is treated as a fault, except FM2/PS2/PS3 reading
+// Anything whose status isn't exactly "Present" is treated as a fault, except PS2/PS3 reading
 // "Not Present" specifically on a 2U chassis (see REDUCED_CHASSIS_OPTIONAL_BAYS above).
 function parseHwdiagFanInfo(output) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
@@ -286,13 +288,13 @@ function parseHwdiagFanInfo(output) {
 // Gate for the Open_Problems/fmadm generic fan-capacity fallback below (see parseIlomProblems'
 // fanCapacityAlert) — that fallback fires on the literal phrase/problem-class alone, with no way
 // to tell a real fan problem from ILOM's fault manager not knowing about this chassis's smaller
-// fan/PSU population. Only treat it as a known false positive when the chassis is confirmed 2U
-// *and* every bay that chassis is actually expected to carry (FM0/FM1/PS0/PS1) reads "Present" —
-// if hwdiag can't confirm that (its session failed, or something's actually missing), surface the
-// alert rather than risk hiding a real problem.
+// PSU population. Only treat it as a known false positive when the chassis is confirmed 2U *and*
+// every bay that chassis is actually expected to carry (FM0/FM1/FM2/PS0/PS1 — all 3 fans, only 2 of
+// the 4 PSU bays) reads "Present" — if hwdiag can't confirm that (its session failed, or something's
+// actually missing), surface the alert rather than risk hiding a real problem.
 function isNormalReducedFanChassis(hwdiagOut) {
   if (!hwdiagOut || !isReducedFanChassis(hwdiagOut)) return false;
-  return ['FM0', 'FM1', 'PS0', 'PS1'].every((id) => new RegExp(`\\b${id}\\s*-\\s*Present\\b`, 'i').test(hwdiagOut));
+  return ['FM0', 'FM1', 'FM2', 'PS0', 'PS1'].every((id) => new RegExp(`\\b${id}\\s*-\\s*Present\\b`, 'i').test(hwdiagOut));
 }
 
 // hwdiag temp get all prints one line per sensor, e.g.:
@@ -1383,7 +1385,7 @@ router.get('/', async (req, res) => {
     // result (or lack of one) is known.
     if (fanCapacityAlertPending) {
       if (isNormalReducedFanChassis(hwdiagOut)) {
-        console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber} — confirmed 2U chassis with FM0/FM1/PS0/PS1 all present`);
+        console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber} — confirmed 2U chassis with FM0/FM1/FM2/PS0/PS1 all present`);
       } else {
         sendPartial(
           'fan-capacity-check',
