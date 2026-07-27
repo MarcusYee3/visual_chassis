@@ -140,13 +140,14 @@ function parseIlomProblems(output) {
     addComp('gpu');
   }
   // A fan-class problem can also be reported without naming one specific FM (e.g.
-  // "alert.chassis.config.fan.capacity-deficient" affecting "/SYS" as a whole, from multiple fan
-  // failures/missing fans) — surface that too instead of silently dropping it just because no
-  // single fan number could be extracted.
-  if (fanSeen.size === 0 && /fault\.chassis\.device\.fan|alert\.chassis\.config\.fan|fan (?:module|capacity)/i.test(output)) {
-    faults.genericErrors.push('Fan-related problem reported (insufficient cooling capacity or multiple fan issues) — see raw output for detail');
-    addComp('gpu');
-  }
+  // "fault.chassis.config.fan.capacity-insufficient" affecting "/SYS" as a whole, from multiple
+  // fan failures/missing fans — confirmed against real hardware, SN 2629YW10AD, 2026-07-27, both
+  // as fmadm's own problem class and as show /System/Open_Problems' one-liner "Insufficient
+  // cooling capacity due to multiple faulted or missing fans."). This alone doesn't distinguish a
+  // real fault from a 2U chassis's *expected* reduced fan/PSU population (see
+  // isNormalReducedFanChassis below, used by the caller to decide whether to actually surface
+  // this) — just record that it fired here instead of deciding anything.
+  const fanCapacityAlert = fanSeen.size === 0 && /fault\.chassis\.device\.fan|alert\.chassis\.config\.fan|fault\.chassis\.config\.fan\.capacity|fan (?:module|capacity)|insufficient cooling capacity/i.test(output);
 
   if (/\/SYS\/GPU|GPU[\s_]?BASEBOARD|GPUBD|number of GPU|GPU.*not present/i.test(output)) addComp('gpu');
   if (/\/SYS\/BMC\b/i.test(output)) addComp('bmc');
@@ -227,26 +228,47 @@ function parseIlomProblems(output) {
     addPcieFault(resourceMatch[1], certaintyMatch ? parseInt(certaintyMatch[1], 10) : null);
   }
 
-  return { faults, raw: output };
+  return { faults, raw: output, fanCapacityAlert };
 }
+
+// Every hwdiag command's own banner prints a "Chassis type: <X>." line — confirmed against real
+// hardware across multiple SNs (2630YW1027, 2630YW1049, 2629YW10AD, 2026-07) that this reads
+// "Chassis type: 2U Flex." for the reduced-bay 2U platform.
+function isReducedFanChassis(hwdiagOut) {
+  return /Chassis type:\s*2U/i.test(hwdiagOut);
+}
+
+// FM2 and PS2/PS3 are bays a 2U Flex chassis simply doesn't populate — reporting "Not Present" on
+// this chassis type is the expected, fully-healthy configuration, not a fault. Confirmed against
+// real hardware, SN 2630YW1027, 2026-07-23: FM0/FM1/FM2 all "Present", PS0/PS1 "Present", PS2/PS3
+// "Not Present" (2 PSUs, not the larger chassis's 4) on a unit with no other reported problems.
+const REDUCED_CHASSIS_OPTIONAL_BAYS = new Set(['FM2', 'PS2', 'PS3']);
 
 // hwdiag fan info prints one line per fan ("FM<n>") and PSU ("PS<n>"), e.g.:
 //   FM1    -  Present
 //   FM21   - Not Readable
 //   PS1    -  Present
-// Anything whose status isn't "Present" is treated as a fault.
+// Anything whose status isn't exactly "Present" is treated as a fault, except FM2/PS2/PS3 reading
+// "Not Present" specifically on a 2U chassis (see REDUCED_CHASSIS_OPTIONAL_BAYS above).
 function parseHwdiagFanInfo(output) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
   const psuSeen = new Set();
+  const reducedChassis = isReducedFanChassis(output);
 
   const re = /^\s*(FM|PS)(\d+)\s*-\s*(.+?)\s*$/gim;
   let m;
   while ((m = re.exec(output)) !== null) {
     const [, kind, numStr, status] = m;
-    if (/present/i.test(status)) continue;
+    const trimmedStatus = status.trim();
+    // Exact match only — the previous /present/i.test(status) matched "present" as a *substring*
+    // anywhere in the status text, which silently also matched "Not Present" (it contains
+    // "Present") and so never actually flagged a missing fan/PSU on any chassis, reduced or not.
+    if (/^present$/i.test(trimmedStatus)) continue;
+    const bayId = `${kind}${numStr}`;
+    if (reducedChassis && REDUCED_CHASSIS_OPTIONAL_BAYS.has(bayId) && /^not present$/i.test(trimmedStatus)) continue;
     const n = parseInt(numStr, 10);
     if (kind === 'FM') {
       if (!fanSeen.has(n)) { fanSeen.add(n); faults.fanIds.push(n); }
@@ -259,6 +281,18 @@ function parseHwdiagFanInfo(output) {
   }
 
   return { faults, raw: output };
+}
+
+// Gate for the Open_Problems/fmadm generic fan-capacity fallback below (see parseIlomProblems'
+// fanCapacityAlert) — that fallback fires on the literal phrase/problem-class alone, with no way
+// to tell a real fan problem from ILOM's fault manager not knowing about this chassis's smaller
+// fan/PSU population. Only treat it as a known false positive when the chassis is confirmed 2U
+// *and* every bay that chassis is actually expected to carry (FM0/FM1/PS0/PS1) reads "Present" —
+// if hwdiag can't confirm that (its session failed, or something's actually missing), surface the
+// alert rather than risk hiding a real problem.
+function isNormalReducedFanChassis(hwdiagOut) {
+  if (!hwdiagOut || !isReducedFanChassis(hwdiagOut)) return false;
+  return ['FM0', 'FM1', 'PS0', 'PS1'].every((id) => new RegExp(`\\b${id}\\s*-\\s*Present\\b`, 'i').test(hwdiagOut));
 }
 
 // hwdiag temp get all prints one line per sensor, e.g.:
@@ -1224,6 +1258,13 @@ router.get('/', async (req, res) => {
     // partial either way, same reasoning as runAndReportCheck above — a timeout on any one of them
     // (Open_Problems, fmadm, or the hwdiag session) must not discard whatever the others already
     // found or are still about to find.
+    //
+    // The generic fan-capacity fallback (see parseIlomProblems' fanCapacityAlert) can't be judged
+    // from Open_Problems/fmadm alone — only hwdiag (parsed further below) knows the chassis type
+    // and which fan/PSU bays are actually populated — so it's held back here instead of being sent
+    // as its own partial immediately, and only resolved once hwdiag's result (or failure) is known.
+    let fanCapacityAlertPending = false;
+    let hwdiagOut = null;
     try {
       const ilomOut = await runIlomSession(
         [
@@ -1235,6 +1276,7 @@ router.get('/', async (req, res) => {
       console.log('[diagnose] ILOM raw output:\n', ilomOut);
       const openProblemsParsed = parseIlomProblems(ilomOut);
       console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
+      if (openProblemsParsed.fanCapacityAlert) fanCapacityAlertPending = true;
       sendPartial('Open_Problems', openProblemsParsed.faults, ilomOut);
     } catch (err) {
       console.error('[diagnose] Open_Problems check failed for', serialNumber, ':', err.message);
@@ -1265,6 +1307,7 @@ router.get('/', async (req, res) => {
       console.log('[diagnose] fmadm raw output:\n', fmadmOut);
       const fmadmParsed = parseIlomProblems(fmadmOut);
       console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+      if (fmadmParsed.fanCapacityAlert) fanCapacityAlertPending = true;
       sendPartial('fmadm', fmadmParsed.faults, fmadmOut);
     } catch (err) {
       console.error('[diagnose] fmadm check failed for', serialNumber, ':', err.message);
@@ -1272,7 +1315,7 @@ router.get('/', async (req, res) => {
     }
 
     try {
-      const hwdiagOut = await runIlomSession([
+      hwdiagOut = await runIlomSession([
         { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
         // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI reference
         // wiring vs. what's actually connected) is what catches a swapped IOU PCIe/power cable, the
@@ -1312,6 +1355,20 @@ router.get('/', async (req, res) => {
     } catch (err) {
       console.error('[diagnose] hwdiag check failed for', serialNumber, ':', err.message);
       sendPartial('hwdiag', { ...emptyFaults, genericErrors: [`hwdiag check failed: ${err.message}`] }, err.message);
+    }
+
+    // Resolve the fan-capacity alert held back above, now that hwdiag's chassis-type/bay-presence
+    // result (or lack of one) is known.
+    if (fanCapacityAlertPending) {
+      if (isNormalReducedFanChassis(hwdiagOut)) {
+        console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber} — confirmed 2U chassis with FM0/FM1/PS0/PS1 all present`);
+      } else {
+        sendPartial(
+          'fan-capacity-check',
+          { ...emptyFaults, components: ['gpu'], genericErrors: ['Fan-related problem reported (insufficient cooling capacity or multiple fan issues) — see raw output for detail'] },
+          ''
+        );
+      }
     }
 
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
