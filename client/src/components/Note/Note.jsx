@@ -29,7 +29,7 @@ function NoteEntry({ record, onHighlight, serialNumber }) {
         // the user) — a targeted check finding nothing just means nothing to highlight, which is
         // already this component's normal "no faults" behavior.
         let accumulated = EMPTY_FAULTS;
-        await diagnoseServer('server-1', serialNumber, undefined, undefined, false, false, (event) => {
+        await diagnoseServer('server-1', serialNumber, undefined, undefined, {}, (event) => {
           if (event.type === 'partial') accumulated = mergeFaultsClient(accumulated, event.faults);
         });
         onHighlight?.({ faults: accumulated });

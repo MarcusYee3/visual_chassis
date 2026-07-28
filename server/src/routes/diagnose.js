@@ -619,14 +619,23 @@ async function runPowerOnCheck(serialNumber, options = {}) {
   // too-narrow trigger) — HOSTNIC's state is relevant context for interpreting the power-rail
   // reading regardless of what the ticket says. Reuses the same eve_ip output already fetched for
   // the ILOM row above, no extra round trip.
+  //
+  // options.bypassHostnicCheck (mirrors bypassPowerState below) lets the caller skip this gate and
+  // run the power-rail check anyway — set when the user answers "yes" to the router's "keep
+  // running the targeted check?" confirm prompt (see gateParam on the returned object: the router
+  // uses it to know which flag to resend on that follow-up request).
   const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
   if (hostnicRowMatch) {
     const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
     if (!/^up$/i.test(hostnicStatus)) {
-      return {
-        faults: { ...emptyFaults, genericErrors: [`POWER_ON check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
-        raw: eveOut,
-      };
+      if (!options.bypassHostnicCheck) {
+        return {
+          faults: { ...emptyFaults, genericErrors: [`POWER_ON check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
+          raw: eveOut,
+          gateParam: 'bypassHostnicCheck',
+        };
+      }
+      console.log(`[diagnose] POWER_ON check: HOSTNIC is "${hostnicStatus}" but bypassHostnicCheck was requested — running the power-rail check anyway`);
     }
   }
 
@@ -642,6 +651,8 @@ async function runPowerOnCheck(serialNumber, options = {}) {
   // options.bypassPowerState lets the user override this and run the power-rail check anyway —
   // e.g. a technician who just flipped the unit on and knows the ILOM's power_state property
   // hasn't caught up yet, or wants the rail readings regardless of what /SYS currently reports.
+  // Set when the user answers "yes" to the router's "keep running the targeted check?" confirm
+  // prompt (see gateParam on the returned object below).
   const sysOut = await runIlomSession([
     { line: 'show /SYS', delayAfterMs: 3000 },
     { line: 'exit', delayAfterMs: 1500 },
@@ -653,6 +664,7 @@ async function runPowerOnCheck(serialNumber, options = {}) {
       return {
         faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
         raw: `${eveOut}\n${sysOut}`,
+        gateParam: 'bypassPowerState',
       };
     }
     console.log(`[diagnose] POWER_ON check: /SYS power_state is "${powerStateMatch[1]}" but bypassPowerState was requested — running the power-rail check anyway`);
@@ -1093,7 +1105,7 @@ router.get('/precheck', async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState, continueToDefault } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState, bypassHostnicCheck, continueToDefault } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -1111,39 +1123,46 @@ router.get('/', async (req, res) => {
   // being at the mercy of) the single slowest/flakiest command in the whole chain. NDJSON over a
   // chunked response rather than SSE/WebSocket: same-origin, one-directional, and this keeps
   // client-side parsing to "split on \n, JSON.parse each line" with no extra protocol.
-  //   {type:'partial', label, faults, raw} — merge `faults` into the running total immediately
-  //   {type:'fatal', error}                — unrecoverable (e.g. ILOM down); stream ends after this
-  //   {type:'confirm', message}            — stream ends after this; ask the user whether to
-  //                                           continue, and if so re-request with
-  //                                           ?continueToDefault=1 (see below)
+  //   {type:'partial', label, faults, raw}   — merge `faults` into the running total immediately
+  //   {type:'fatal', error}                  — unrecoverable (e.g. ILOM down); stream ends after this
+  //   {type:'confirm', message, resumeParam} — stream ends after this; ask the user whether to
+  //                                            continue, and if so re-request with every previous
+  //                                            query param plus ?<resumeParam>=1 (e.g.
+  //                                            bypassPowerState, bypassHostnicCheck, or
+  //                                            continueToDefault — the client doesn't need to know
+  //                                            which, just resend it)
   //   {type:'done', source, defaultFlowNotice} — stream finished; these are the final status fields
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   const sendPartial = (label, faults, raw) => res.write(`${JSON.stringify({ type: 'partial', label, faults, raw })}\n`);
   const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
-  const sendConfirm = (message) => res.write(`${JSON.stringify({ type: 'confirm', message })}\n`);
+  const sendConfirm = (message, resumeParam) => res.write(`${JSON.stringify({ type: 'confirm', message, resumeParam })}\n`);
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
-  // ?bypassPowerState=1 lets the user skip the POWER_ON check's own /SYS power_state gate (see
-  // runPowerOnCheck) and get the hwdiag power-rail reading regardless of what /SYS currently
-  // reports. Passed unconditionally to every targeted check below — every check besides
-  // runPowerOnCheck simply ignores the extra options argument.
-  const checkOptions = { bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true' };
+  // ?bypassPowerState=1 / ?bypassHostnicCheck=1 let the user skip runPowerOnCheck's own /SYS
+  // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. Passed
+  // unconditionally to every targeted check below — every check besides runPowerOnCheck simply
+  // ignores the extra options argument.
+  const checkOptions = {
+    bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true',
+    bypassHostnicCheck: bypassHostnicCheck === '1' || bypassHostnicCheck === 'true',
+  };
   // Runs one targeted check and reports it as a partial either way — a thrown error (e.g. a
   // localExec/runIlomSession timeout) becomes a genericErrors fragment naming the check instead of
   // aborting the rest of the chain, since every other check's findings are still valid and worth
-  // keeping. Returns the faults object so callers can tell whether the check actually found
-  // anything (see hasRealFinding below).
+  // keeping. Returns the full result ({faults, gateParam}) so callers can tell whether the check
+  // actually found anything (see hasRealFinding below) and whether it stopped at a bypassable gate
+  // (runPowerOnCheck's own power_state/HOSTNIC checks set gateParam when they do).
   const runAndReportCheck = async (checkName, targetedCheck) => {
     try {
       const result = await targetedCheck(serialNumber, checkOptions);
       sendPartial(checkName, result.faults, result.raw);
-      return result.faults;
+      return result;
     } catch (err) {
       console.error(`[diagnose] targeted check ${checkName} failed for ${serialNumber}:`, err.message);
       const faults = { ...emptyFaults, genericErrors: [`${checkName} check failed: ${err.message}`] };
       sendPartial(checkName, faults, err.message);
-      return faults;
+      return { faults };
     }
   };
 
@@ -1219,21 +1238,35 @@ router.get('/', async (req, res) => {
     const skipTargetedCheck = continueToDefault === '1' || continueToDefault === 'true';
     if (targetedCheckName && !skipTargetedCheck) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
-      const targetedFaults = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
-      if (hasRealFinding(targetedFaults)) {
-        sendDone({ source: defaultFlowSourceTag });
+      const targetedResult = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
+      const targetedFaults = targetedResult.faults;
+
+      // The check stopped at a bypassable gate (runPowerOnCheck's own power_state/HOSTNIC checks —
+      // see gateParam) without that bypass already being active. Ask specifically whether to keep
+      // running *this* targeted check past the gate, before considering the broader default chain
+      // at all — a "no" here just means stop, not "ask about the default chain instead" (see below,
+      // reached only when no gate was hit this time).
+      if (targetedResult.gateParam && !checkOptions[targetedResult.gateParam]) {
+        console.log(`[diagnose] ${targetedCheckName} stopped at a gate (${targetedResult.gateParam}) for ${serialNumber} — asking whether to keep running the targeted check`);
+        let gateNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} stopped early`;
+        if (!/[.?!]$/.test(gateNote)) gateNote += '.';
+        sendConfirm(`${gateNote} Keep running the targeted check anyway?`, targetedResult.gateParam);
         return res.end();
       }
-      // The targeted check didn't flag any actual part — at most an explanatory genericErrors
-      // note (already sent above via sendPartial, e.g. "HOSTNIC is DOWN — check the DAC cable",
-      // so it isn't lost) — so it's not a trustworthy final answer on its own. Rather than
-      // silently falling through into the default ILOM chain (Open_Problems -> fmadm -> hwdiag ->
-      // every targeted check), ask the user first and stop the stream here; if they confirm, the
-      // client re-requests with ?continueToDefault=1.
-      console.log(`[diagnose] ${targetedCheckName} found no real part-level fault for ${serialNumber} — asking whether to continue to the default ILOM diagnostic chain`);
-      let targetedNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} found no fault`;
-      if (!/[.?!]$/.test(targetedNote)) targetedNote += '.';
-      sendConfirm(`${targetedNote} Continue to the default diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check)?`);
+
+      // The targeted check ran to completion this time (found a real fault, found nothing, or ran
+      // after a gate bypass) — in general, always ask whether to also continue to the default
+      // diagnostic chain, regardless of what this one check found, since any single targeted check
+      // only ever covers its own narrow slice (e.g. CHECK_POWER_ON never looks at fans/DIMMs/PCIe).
+      console.log(`[diagnose] ${targetedCheckName} finished for ${serialNumber} — asking whether to continue to the default ILOM diagnostic chain`);
+      let continueNote;
+      if (hasRealFinding(targetedFaults)) {
+        continueNote = `${targetedCheckName} found a fault (${(targetedFaults.components || []).join(', ') || 'see details above'}).`;
+      } else {
+        continueNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} found no fault`;
+        if (!/[.?!]$/.test(continueNote)) continueNote += '.';
+      }
+      sendConfirm(`${continueNote} Continue to the default diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check)?`, 'continueToDefault');
       return res.end();
     }
     if (skipTargetedCheck && targetedCheckName) {

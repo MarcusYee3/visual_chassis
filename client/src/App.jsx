@@ -27,6 +27,15 @@ const statusCardStyle = {
   gap: '6px',
 };
 
+// Human-readable loading text per {type:'confirm'} resumeParam, shown while the follow-up request
+// (after the user says "yes") is in flight — keyed to match exactly what the server names in
+// server/src/routes/diagnose.js's sendConfirm calls.
+const RESUME_LOADING_LABELS = {
+  bypassPowerState: 'Re-running the targeted check (server reports powered off)…',
+  bypassHostnicCheck: 'Re-running the targeted check (HOSTNIC reports down)…',
+  continueToDefault: 'Running the default diagnostic chain…',
+};
+
 const genericErrorStyle = {
   width: '100%',
   maxWidth: '740px',
@@ -83,16 +92,16 @@ function App() {
     // logPanel's loggable parts, the "Faults detected" status text — can be computed the instant
     // the stream ends, against the complete picture, without waiting on an extra render cycle.
     let accumulated = EMPTY_FAULTS;
+    // Every extra flag the user has agreed to so far (e.g. {bypassHostnicCheck: true}), resent on
+    // every subsequent request — the server is stateless across requests, so a later request must
+    // still carry every earlier confirm's answer, not just the newest one.
+    const resumeFlags = { bypassPowerState: !!formData.bypassPowerState };
 
-    // Runs one diagnose request and returns whichever event ended the stream ({type:'done'},
-    // {type:'confirm'}, or {type:'fatal'}). A targeted check that finds nothing asks the user
-    // whether to continue instead of silently falling through to the default chain, so a single
-    // form submit can involve two requests: the first (continueToDefault=false) may stop at a
-    // confirm prompt, and if the user agrees, a second request (continueToDefault=true) skips
-    // straight to the default ILOM chain.
-    const streamOnce = async (continueToDefault) => {
+    // Runs one diagnose request (with the current resumeFlags) and returns whichever event ended
+    // the stream ({type:'done'}, {type:'confirm'}, or {type:'fatal'}).
+    const streamOnce = async () => {
       let terminalEvent = null;
-      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, formData.bypassPowerState, continueToDefault, (event) => {
+      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, resumeFlags, (event) => {
         if (event.type === 'partial') {
           // Merged into the running total and shown immediately — the default ILOM chain runs
           // many commands unconditionally and can take a while end-to-end, so faults already found
@@ -110,16 +119,21 @@ function App() {
     };
 
     try {
-      let terminalEvent = await streamOnce(false);
+      let terminalEvent = await streamOnce();
 
-      if (terminalEvent?.type === 'confirm') {
+      // A single diagnosis can chain through several confirms — a targeted check may stop at more
+      // than one bypassable gate in sequence (e.g. HOSTNIC down, then also power_state off once
+      // HOSTNIC is bypassed), and once it finishes it always asks separately whether to also run
+      // the default chain. Each "yes" adds that confirm's resumeParam to resumeFlags and re-runs;
+      // any "no" stops the loop there, keeping whatever was found as final.
+      while (terminalEvent?.type === 'confirm') {
         // eslint-disable-next-line no-alert -- matches the confirm-before-submit pattern already
         // used in Form.jsx; this is a deliberate blocking prompt, not an accidental one.
         const shouldContinue = window.confirm(terminalEvent.message);
-        if (shouldContinue) {
-          setLoadingNotice('Running the default diagnostic chain…');
-          terminalEvent = await streamOnce(true);
-        }
+        if (!shouldContinue) break;
+        resumeFlags[terminalEvent.resumeParam] = true;
+        setLoadingNotice(RESUME_LOADING_LABELS[terminalEvent.resumeParam] || 'Continuing…');
+        terminalEvent = await streamOnce();
       }
 
       // Covers both a normal 'done' and a declined 'confirm' (nothing further was checked, but

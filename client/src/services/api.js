@@ -63,20 +63,25 @@ export const validateSerialNumber = async (sn) => {
 // default ILOM chain runs many commands unconditionally, and a single slow/timing-out one used to
 // abort the whole response, discarding every fault already found. onEvent(event) is called for
 // each line as it arrives, in order; event.type is one of:
-//   'partial' {label, faults, raw}        — merge `faults` into the running total immediately
-//   'fatal'   {error}                     — unrecoverable (e.g. ILOM down); stream ends after this
-//   'confirm' {message}                   — stream ends after this; a matched targeted check (or
-//                                            the CHECK_POWER_ON/UPDATE_HOSTNIC_FW_REMOTE pairing's
-//                                            DAC-cable check) found no real fault, so ask the user
-//                                            whether to continue — if yes, call this again with
-//                                            continueToDefault:true to run the default chain
-//   'done'    {source, defaultFlowNotice} — stream finished, these are the final status fields
-export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink, bypassPowerState, continueToDefault, onEvent) => {
+//   'partial' {label, faults, raw}          — merge `faults` into the running total immediately
+//   'fatal'   {error}                       — unrecoverable (e.g. ILOM down); stream ends after this
+//   'confirm' {message, resumeParam}        — stream ends after this; ask the user whether to
+//                                              continue (e.g. a targeted check stopped at a
+//                                              bypassable gate like HOSTNIC down, or finished and
+//                                              is asking whether to also run the default chain) —
+//                                              if yes, call this again with the same extraParams
+//                                              plus {[resumeParam]: true}
+//   'done'    {source, defaultFlowNotice}   — stream finished, these are the final status fields
+// extraParams is a flat object of extra query flags to send, e.g.
+// {bypassPowerState: true, continueToDefault: true} — whatever a prior 'confirm' event's
+// resumeParam named, accumulated across a chain of confirms within one diagnosis.
+export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink, extraParams, onEvent) => {
   const params = new URLSearchParams({ serialNumber });
   if (ilomIp) params.set('ilomIp', ilomIp);
   if (jiraLink) params.set('jiraLink', jiraLink);
-  if (bypassPowerState) params.set('bypassPowerState', '1');
-  if (continueToDefault) params.set('continueToDefault', '1');
+  for (const [key, value] of Object.entries(extraParams || {})) {
+    if (value) params.set(key, '1');
+  }
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
   if (!response.ok) {
     // Only the pre-stream validation checks (missing/invalid serial number) respond this way —
