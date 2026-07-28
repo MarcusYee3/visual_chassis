@@ -1161,7 +1161,7 @@ router.get('/', async (req, res) => {
   // localExec/runIlomSession timeout) becomes a genericErrors fragment naming the check instead of
   // aborting the rest of the chain, since every other check's findings are still valid and worth
   // keeping. Returns the faults object so callers can tell whether the check actually found
-  // anything (see isEmptyFaults below).
+  // anything (see hasRealFinding below).
   const runAndReportCheck = async (checkName, targetedCheck) => {
     try {
       const result = await targetedCheck(serialNumber, checkOptions);
@@ -1175,14 +1175,19 @@ router.get('/', async (req, res) => {
     }
   };
 
-  // True only when a faults object is completely empty — no components, no per-part ids, no
-  // generic status messages at all. A targeted check that returns *something* (even just an
-  // informational message like "server is not powered on") is a real answer and stays as the
-  // final result; only a genuinely empty result falls through to the default chain below.
-  const isEmptyFaults = (f) => !f || [
+  // Deliberately excludes genericErrors — confirmed on real hardware (SN 2629YW10F0, 2026-07-28):
+  // CHECK_POWER_ON (with bypassPowerState) came back with zero components/psuPorts/etc. and only
+  // a genericErrors note ("host is not powered on, PS0/PS1 reading 0A/0V is expected") explaining
+  // *why* nothing else was checked. Treating that as "a real answer, stop here" (the first version
+  // of this fix did) meant the default chain never got a chance to actually check anything for
+  // that unit. A plain informational/explanatory message on its own isn't a part-level finding —
+  // only components/psuPorts/retimerIds/e1sIds/pcieFaults/fanIds/cableFaults/pcieSwitchIds/dimmIds
+  // count as "the targeted check actually found something", so genericErrors-only results now
+  // fall through too (the message itself is still kept — see sendPartial in runAndReportCheck).
+  const hasRealFinding = (f) => !!f && [
     'components', 'psuPorts', 'retimerIds', 'e1sIds', 'pcieFaults', 'fanIds',
-    'genericErrors', 'cableFaults', 'pcieSwitchIds', 'dimmIds',
-  ].every((key) => (f[key] || []).length === 0);
+    'cableFaults', 'pcieSwitchIds', 'dimmIds',
+  ].some((key) => (f[key] || []).length > 0);
 
   try {
     // ?forceCheck=<checkName> runs a specific targeted check directly, regardless of what the
@@ -1238,16 +1243,16 @@ router.get('/', async (req, res) => {
     if (targetedCheckName) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const targetedFaults = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
-      if (!isEmptyFaults(targetedFaults)) {
+      if (hasRealFinding(targetedFaults)) {
         sendDone({ source: defaultFlowSourceTag });
         return res.end();
       }
-      // The targeted check ran cleanly but came back with nothing at all — not even a status
-      // message — so it's not a trustworthy final answer on its own. Fall through into the same
-      // default ILOM chain below (Open_Problems -> fmadm -> hwdiag -> every targeted check)
-      // instead of reporting a possibly-false "no problems", same as if no targeted check had
-      // matched in the first place.
-      console.log(`[diagnose] ${targetedCheckName} returned nothing for ${serialNumber} — falling through to the default ILOM diagnostic chain`);
+      // The targeted check didn't flag any actual part — at most an explanatory genericErrors
+      // note (already sent above via sendPartial, so it isn't lost) — so it's not a trustworthy
+      // final answer on its own. Fall through into the same default ILOM chain below
+      // (Open_Problems -> fmadm -> hwdiag -> every targeted check) instead of stopping there,
+      // same as if no targeted check had matched in the first place.
+      console.log(`[diagnose] ${targetedCheckName} found no real part-level fault for ${serialNumber} — falling through to the default ILOM diagnostic chain`);
       defaultFlowNotice = `${defaultFlowSourceTag}'s targeted check (${targetedCheckName}) found nothing — running the default ILOM diagnostic chain instead…`;
       defaultFlowSourceTag = `${defaultFlowSourceTag}-empty-fallback`;
     }
