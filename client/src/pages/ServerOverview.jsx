@@ -211,49 +211,52 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                       border: `1px solid ${cableColor}`,
                       boxShadow: cableFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
                     };
+                    // Renders slotA, the connector, and slotB as three independent siblings
+                    // (rather than nesting the connector inside slotB's own flex:1 wrapper) so
+                    // both modules get an identical width share — nesting it inside slotB's
+                    // wrapper previously ate into that module's own space, rendering it visibly
+                    // narrower than slotA's.
+                    const renderModule = (slot) => {
+                      const iou = OSFP_SLOT_TO_IOU[slot];
+                      const port = allOsfpPorts[slot - 1];
+                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
+                        || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
+                      return (
+                        <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
+                            onClick={() => handleOsfpSlotClick(slot)}
+                            hasFault={hasFault} />
+                          {expandedOsfpSlot[slot] && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
+                              title={`OSFP ${slot} <-> IOU ${iou}`}>
+                              <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+                              <div style={{
+                                fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
+                                letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
+                                border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
+                                whiteSpace: 'nowrap',
+                              }}>
+                                IOU {iou}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    };
                     return (
                       <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start' }}>
-                          {[slotA, slotB].map((slot, idx) => {
-                            const iou = OSFP_SLOT_TO_IOU[slot];
-                            const port = allOsfpPorts[slot - 1];
-                            const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
-                              || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
-                            return (
-                              <div key={slot} style={{ display: 'flex', alignItems: 'flex-start', flex: 1 }}>
-                                {idx === 1 && (
-                                  <div style={{ display: 'flex', alignItems: 'center', width: '18px', flexShrink: 0, marginTop: '16px' }}
-                                    title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${cableFaulted ? ' — DOWN' : ''}`}>
-                                    <div style={cablePlugStyle} />
-                                    <div style={{
-                                      flex: 1, height: 0, borderTop: `2px dotted ${cableColor}`,
-                                      filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
-                                    }} />
-                                    <div style={cablePlugStyle} />
-                                  </div>
-                                )}
-                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                  <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
-                                    onClick={() => handleOsfpSlotClick(slot)}
-                                    hasFault={hasFault} />
-                                  {expandedOsfpSlot[slot] && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                                      title={`OSFP ${slot} <-> IOU ${iou}`}>
-                                      <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
-                                      <div style={{
-                                        fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
-                                        letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
-                                        border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
-                                        whiteSpace: 'nowrap',
-                                      }}>
-                                        IOU {iou}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
+                          {renderModule(slotA)}
+                          <div style={{ display: 'flex', alignItems: 'center', width: '18px', flexShrink: 0, marginTop: '16px' }}
+                            title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${cableFaulted ? ' — DOWN' : ''}`}>
+                            <div style={cablePlugStyle} />
+                            <div style={{
+                              flex: 1, height: 0, borderTop: `2px dotted ${cableColor}`,
+                              filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+                            }} />
+                            <div style={cablePlugStyle} />
+                          </div>
+                          {renderModule(slotB)}
                         </div>
                         <div style={{
                           fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
