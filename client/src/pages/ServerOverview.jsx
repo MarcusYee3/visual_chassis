@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import ServerContainer from '../components/ServerContainer/ServerContainer';
 import OSFPModule from '../components/OSFPModules/OSFPModule';
-import PCIePort from '../components/PCIePorts/PCIePort';
 import PSUPort from '../components/PSUPorts/PSUPort';
 import E1SBoard from '../components/E1SBoards/E1SBoard';
 import GXR3VRetimer from '../components/GXR3VRetimer/GXR3VRetimer';
@@ -9,7 +8,7 @@ import PCIeSwitch from '../components/PCIeSwitch/PCIeSwitch';
 import FanModule from '../components/FanModule/FanModule';
 import DimmModule from '../components/DimmModule/DimmModule';
 import { useServerData } from '../hooks/useServerData';
-import { getOSFPModules, getPCIePorts, getPSUPorts } from '../services/api';
+import { getOSFPModules, getPSUPorts } from '../services/api';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
@@ -72,6 +71,10 @@ const prefersReducedMotion = typeof window !== 'undefined'
 // The Retimer BD's 8 GXR3 retimer cards live on these same 8 IOUs, so they're labeled/ordered by
 // OSFP slot here too (see the Retimer BD section below) rather than by raw IOU number.
 const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
+// Adjacent slot pairs joined by one physical loopback cable, per lionking_OSFP.py's own port
+// order (mirrors server/src/routes/diagnose.js's OSFP_CABLE_SLOT_PAIRS) — labeled "CABLE 1-2" etc.
+// below, by slot number rather than the IOU numbers on either end.
+const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
 
 // Each CPU (P0/P1) carries 16 DIMM slots (D0-D15) across 4 memory controllers of 4 DIMMs each,
 // per the real captured "CPU <p> Memory Controller <m>" hwdiag fabric-test output — see
@@ -82,12 +85,13 @@ const DIMM_SLOTS = Array.from({ length: 16 }, (_, i) => i);
 function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   const [osfpModules, setOsfpModules] = useState([]);
-  const [expandedOsfp, setExpandedOsfp] = useState({});
-  const [pciePorts, setPciePorts] = useState({});
   const [expandedMb, setExpandedMb] = useState(false);
   const [psuPorts, setPsuPorts] = useState([]);
-  // Keyed by OSFP slot (1-8) — toggles that retimer's own cable-link reveal (see the Retimer BD
-  // section below), independent of the GBB Tray's own OSFP-module cable-pair expansion above.
+  // Keyed by OSFP slot (1-8) — toggles that OSFP module's own single-IOU cable-link reveal (see
+  // the GBB Tray section below).
+  const [expandedOsfpSlot, setExpandedOsfpSlot] = useState({});
+  // Keyed by OSFP slot (1-8) — same idea as expandedOsfpSlot above, but for the Retimer BD's own
+  // OSFP row further down (independent state since both can be open at once).
   const [expandedRetimerCable, setExpandedRetimerCable] = useState({});
   const prevFaults = useRef(EMPTY_FAULTS);
 
@@ -116,18 +120,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
 
   const handleRetimerClick = (slot) => setExpandedRetimerCable((prev) => ({ ...prev, [slot]: !prev[slot] }));
 
-  const handleOsfpClick = (osfpId) => {
-    if (expandedOsfp[osfpId]) {
-      setExpandedOsfp((prev) => ({ ...prev, [osfpId]: false }));
-      return;
-    }
-    if (!pciePorts[osfpId]) {
-      getPCIePorts('server-1', osfpId)
-        .then((ports) => setPciePorts((prev) => ({ ...prev, [osfpId]: ports })))
-        .catch(console.error);
-    }
-    setExpandedOsfp((prev) => ({ ...prev, [osfpId]: true }));
-  };
+  const handleOsfpSlotClick = (slot) => setExpandedOsfpSlot((prev) => ({ ...prev, [slot]: !prev[slot] }));
 
   if (loading) return (
     <div style={{ textAlign: 'center', padding: '80px 20px', color: '#999' }}>
@@ -152,6 +145,12 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
     return num >= 1 && num <= 6;
   });
 
+  // The 2 backend OSFP BD modules' pciePorts, flattened in order, line up exactly with OSFP slots
+  // 1-8 (module 1 = slots 1-4, module 2 = slots 5-8 — confirmed against serverData.js's seed:
+  // module 1's ports are literally named "IOU 6"/"IOU 1"/"IOU 7"/"IOU 2", matching
+  // OSFP_SLOT_TO_IOU[1..4]). Real port ids are reused as-is; only the displayed label changes.
+  const allOsfpPorts = osfpModules.flatMap((m) => m.pciePorts || []);
+
   const fontStyle = { fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase' };
 
   const bmcFaulted = has('bmc');
@@ -175,69 +174,49 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* GBB Tray — always shown flat (no collapsed tray box to click through) */}
         <div style={{ width: '100%' }}>
           <div style={categoryHeaderStyle('blue')}>GBB Tray</div>
-          <div style={{ display: 'flex', gap: '4px' }}>
-            {osfpModules.map((mod) => {
-              const modIouNums = (mod.pciePorts || []).map((p) => parseInt(p.name.replace(/\D/g, ''), 10));
-              const modHasFault = (faults.pcieFaults || []).some(f => modIouNums.includes(f.iou))
-                || (faults.cableFaults || []).some((id) => id.split('-').slice(1).some((n) => modIouNums.includes(parseInt(n, 10))));
-              return expandedOsfp[mod.id] ? (
-                <div key={mod.id} style={{ flex: 1 }}>
-                  <div style={{ ...categoryHeaderStyle('blue', true), fontSize: '12px', marginBottom: '4px' }}
-                    onClick={() => handleOsfpClick(mod.id)} role="button" tabIndex={0}
-                    onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleOsfpClick(mod.id)}>
-                    ← {mod.name}
-                  </div>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    {[0, 2].map((pairStart) => {
-                      const portA = (pciePorts[mod.id] || [])[pairStart];
-                      const portB = (pciePorts[mod.id] || [])[pairStart + 1];
-                      if (!portA || !portB) return null;
-                      const iouA = parseInt(portA.name.replace(/\D/g, ''), 10);
-                      const iouB = parseInt(portB.name.replace(/\D/g, ''), 10);
-                      const cableId = `cable-${iouA}-${iouB}`;
-                      const cableFaulted = (faults.cableFaults || []).includes(cableId);
-                      const faultA = (faults.pcieFaults || []).find(f => f.iou === iouA);
-                      const faultB = (faults.pcieFaults || []).find(f => f.iou === iouB);
-                      const cableColor = cableFaulted ? '#ff4444' : '#5a7ab0';
-                      const plugStyle = {
-                        width: '5px', height: '12px', borderRadius: '1px', flexShrink: 0,
-                        background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
-                        border: `1px solid ${cableColor}`,
-                        boxShadow: cableFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
-                      };
+          <div style={{ display: 'flex', gap: '10px' }}>
+            {OSFP_CABLE_SLOT_PAIRS.map(([slotA, slotB]) => {
+              const iouA = OSFP_SLOT_TO_IOU[slotA];
+              const iouB = OSFP_SLOT_TO_IOU[slotB];
+              const cableFaulted = (faults.cableFaults || []).includes(`cable-${iouA}-${iouB}`);
+              return (
+                <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {[slotA, slotB].map((slot) => {
+                      const iou = OSFP_SLOT_TO_IOU[slot];
+                      const port = allOsfpPorts[slot - 1];
+                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
+                        || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
                       return (
-                        <div key={cableId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}
-                          title={`Loopback cable: IOU${iouA} <-> IOU${iouB}${cableFaulted ? ' — DOWN' : ''}`}>
-                          <div style={{ display: 'flex', alignItems: 'center' }}>
-                            <PCIePort id={portA.id} name={portA.name} status={portA.status}
-                              faulted={!!faultA} probability={faultA?.probability ?? null} />
-                            <div style={{ display: 'flex', alignItems: 'center', width: '38px', flexShrink: 0 }}>
-                              <div style={plugStyle} />
+                        <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
+                            onClick={() => handleOsfpSlotClick(slot)}
+                            hasFault={hasFault} />
+                          {expandedOsfpSlot[slot] && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
+                              title={`OSFP ${slot} <-> IOU ${iou}`}>
+                              <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
                               <div style={{
-                                flex: 1, height: 0,
-                                borderTop: `2px dotted ${cableColor}`,
-                                filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
-                              }} />
-                              <div style={plugStyle} />
+                                fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
+                                letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
+                                border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
+                                whiteSpace: 'nowrap',
+                              }}>
+                                IOU {iou}
+                              </div>
                             </div>
-                            <PCIePort id={portB.id} name={portB.name} status={portB.status}
-                              faulted={!!faultB} probability={faultB?.probability ?? null} />
-                          </div>
-                          <div style={{
-                            fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
-                            letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab',
-                          }}>
-                            CABLE {iouA}↔{iouB}
-                          </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
+                  <div style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                    letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab', textAlign: 'center',
+                  }}>
+                    CABLE {slotA}-{slotB}
+                  </div>
                 </div>
-              ) : (
-                <OSFPModule key={mod.id} id={mod.id} name={mod.name}
-                  onClick={() => handleOsfpClick(mod.id)}
-                  hasFault={modHasFault} />
               );
             })}
           </div>
@@ -260,7 +239,11 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
         {/* IOB Tray */}
         <div style={{ width: '100%' }}>
           <div style={categoryHeaderStyle('green')}>IOB Tray</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px' }}>
+          {/* Left/right columns are just a couple of single-item cards (E1S board, BMC, ROT,
+              filler) and don't need much room — narrowed so the center Retimer BD column (which
+              has to fit 8-wide OSFP + PCIE SW rows) gets the width it actually needs instead of
+              being squeezed into an equal third. */}
+          <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 1.8fr 0.6fr', gap: '4px' }}>
 
             {/* Left: E1S A + BMC + ROT */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
