@@ -1125,7 +1125,7 @@ router.get('/precheck', async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState } = req.query;
+  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState, continueToDefault } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -1145,11 +1145,15 @@ router.get('/', async (req, res) => {
   // client-side parsing to "split on \n, JSON.parse each line" with no extra protocol.
   //   {type:'partial', label, faults, raw} — merge `faults` into the running total immediately
   //   {type:'fatal', error}                — unrecoverable (e.g. ILOM down); stream ends after this
+  //   {type:'confirm', message}            — stream ends after this; ask the user whether to
+  //                                           continue, and if so re-request with
+  //                                           ?continueToDefault=1 (see below)
   //   {type:'done', source, defaultFlowNotice} — stream finished; these are the final status fields
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   const sendPartial = (label, faults, raw) => res.write(`${JSON.stringify({ type: 'partial', label, faults, raw })}\n`);
   const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
+  const sendConfirm = (message) => res.write(`${JSON.stringify({ type: 'confirm', message })}\n`);
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   // ?bypassPowerState=1 lets the user skip the POWER_ON check's own /SYS power_state gate (see
@@ -1240,7 +1244,12 @@ router.get('/', async (req, res) => {
       sendDone({ source: defaultFlowSourceTag });
       return res.end();
     }
-    if (targetedCheckName) {
+    // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
+    // confirm prompt below — skips straight past the targeted-check short-circuit into the
+    // default chain (which unconditionally re-sweeps every targeted check in Step 3 anyway, so
+    // there's no need to run it again here first).
+    const skipTargetedCheck = continueToDefault === '1' || continueToDefault === 'true';
+    if (targetedCheckName && !skipTargetedCheck) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const targetedFaults = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
       if (hasRealFinding(targetedFaults)) {
@@ -1248,13 +1257,20 @@ router.get('/', async (req, res) => {
         return res.end();
       }
       // The targeted check didn't flag any actual part — at most an explanatory genericErrors
-      // note (already sent above via sendPartial, so it isn't lost) — so it's not a trustworthy
-      // final answer on its own. Fall through into the same default ILOM chain below
-      // (Open_Problems -> fmadm -> hwdiag -> every targeted check) instead of stopping there,
-      // same as if no targeted check had matched in the first place.
-      console.log(`[diagnose] ${targetedCheckName} found no real part-level fault for ${serialNumber} — falling through to the default ILOM diagnostic chain`);
-      defaultFlowNotice = `${defaultFlowSourceTag}'s targeted check (${targetedCheckName}) found nothing — running the default ILOM diagnostic chain instead…`;
-      defaultFlowSourceTag = `${defaultFlowSourceTag}-empty-fallback`;
+      // note (already sent above via sendPartial, e.g. "HOSTNIC is DOWN — check the DAC cable",
+      // so it isn't lost) — so it's not a trustworthy final answer on its own. Rather than
+      // silently falling through into the default ILOM chain (Open_Problems -> fmadm -> hwdiag ->
+      // every targeted check), ask the user first and stop the stream here; if they confirm, the
+      // client re-requests with ?continueToDefault=1.
+      console.log(`[diagnose] ${targetedCheckName} found no real part-level fault for ${serialNumber} — asking whether to continue to the default ILOM diagnostic chain`);
+      let targetedNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} found no fault`;
+      if (!/[.?!]$/.test(targetedNote)) targetedNote += '.';
+      sendConfirm(`${targetedNote} Continue to the default diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check)?`);
+      return res.end();
+    }
+    if (skipTargetedCheck && targetedCheckName) {
+      defaultFlowNotice = `Continuing to the default ILOM diagnostic chain — ${targetedCheckName} found nothing and the user confirmed running the full chain…`;
+      defaultFlowSourceTag = `${defaultFlowSourceTag}-user-confirmed-continue`;
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
 

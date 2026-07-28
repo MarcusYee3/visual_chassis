@@ -83,9 +83,16 @@ function App() {
     // logPanel's loggable parts, the "Faults detected" status text — can be computed the instant
     // the stream ends, against the complete picture, without waiting on an extra render cycle.
     let accumulated = EMPTY_FAULTS;
-    let doneEvent = null;
-    try {
-      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, formData.bypassPowerState, (event) => {
+
+    // Runs one diagnose request and returns whichever event ended the stream ({type:'done'},
+    // {type:'confirm'}, or {type:'fatal'}). A targeted check that finds nothing asks the user
+    // whether to continue instead of silently falling through to the default chain, so a single
+    // form submit can involve two requests: the first (continueToDefault=false) may stop at a
+    // confirm prompt, and if the user agrees, a second request (continueToDefault=true) skips
+    // straight to the default ILOM chain.
+    const streamOnce = async (continueToDefault) => {
+      let terminalEvent = null;
+      await diagnoseServer('server-1', formData.sn, formData.ilomIp, formData.jiraLink, formData.bypassPowerState, continueToDefault, (event) => {
         if (event.type === 'partial') {
           // Merged into the running total and shown immediately — the default ILOM chain runs
           // many commands unconditionally and can take a while end-to-end, so faults already found
@@ -94,30 +101,48 @@ function App() {
           accumulated = mergeFaultsClient(accumulated, event.faults);
           setFaults(accumulated);
           setLoadingNotice(`Checking ${event.label}…`);
-        } else if (event.type === 'fatal') {
-          setDiagnoseError(event.error);
-        } else if (event.type === 'done') {
-          doneEvent = event;
+        } else {
+          if (event.type === 'fatal') setDiagnoseError(event.error);
+          terminalEvent = event;
         }
       });
+      return terminalEvent;
+    };
 
-      if (doneEvent) {
-        setFlowNotice(doneEvent.defaultFlowNotice || '');
+    try {
+      let terminalEvent = await streamOnce(false);
+
+      if (terminalEvent?.type === 'confirm') {
+        // eslint-disable-next-line no-alert -- matches the confirm-before-submit pattern already
+        // used in Form.jsx; this is a deliberate blocking prompt, not an accidental one.
+        const shouldContinue = window.confirm(terminalEvent.message);
+        if (shouldContinue) {
+          setLoadingNotice('Running the default diagnostic chain…');
+          terminalEvent = await streamOnce(true);
+        }
+      }
+
+      // Covers both a normal 'done' and a declined 'confirm' (nothing further was checked, but
+      // whatever partials already arrived — usually none, since a confirm only fires when the
+      // targeted check found nothing real — still deserve a status line). A 'fatal' is skipped
+      // here since diagnoseError above already covers it.
+      if (terminalEvent && terminalEvent.type !== 'fatal') {
+        setFlowNotice(terminalEvent.defaultFlowNotice || (terminalEvent.type === 'confirm' ? terminalEvent.message : ''));
         const hasFaults = accumulated.components.length > 0 || (accumulated.genericErrors || []).length > 0;
         // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
         // short-circuit (a matched targeted check, a forced check, or faults already documented in
         // a Jira ticket's comments) — the ILOM SSH chain was never opened for it.
-        const isTargetedSource = !!doneEvent.source && !doneEvent.source.startsWith('default-ilom-chain');
-        const isCheckMatch = doneEvent.source?.includes(' -> ');
-        const via = isTargetedSource ? ` (via ${isCheckMatch ? doneEvent.source.split(' -> ')[0] : doneEvent.source}, ILOM not checked)` : '';
+        const isTargetedSource = !!terminalEvent.source && !terminalEvent.source.startsWith('default-ilom-chain');
+        const isCheckMatch = terminalEvent.source?.includes(' -> ');
+        const via = isTargetedSource ? ` (via ${isCheckMatch ? terminalEvent.source.split(' -> ')[0] : terminalEvent.source}, ILOM not checked)` : '';
         setDiagnoseStatus(!hasFaults
           ? 'No open problems detected.'
           : `Faults detected${via}: ${accumulated.components.length > 0 ? accumulated.components.join(', ') : 'see error below'}`);
 
         const parts = getLoggableParts(accumulated);
         if (parts.length > 0) {
-          const checkName = isCheckMatch ? doneEvent.source.split(' -> ')[1] : undefined;
-          setLogPanel({ serialNumber: formData.sn, parts, checkName, source: doneEvent.source });
+          const checkName = isCheckMatch ? terminalEvent.source.split(' -> ')[1] : undefined;
+          setLogPanel({ serialNumber: formData.sn, parts, checkName, source: terminalEvent.source });
         }
       }
     } catch (e) {

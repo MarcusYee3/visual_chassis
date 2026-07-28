@@ -25,8 +25,11 @@ function NoteEntry({ record, onHighlight, serialNumber }) {
         // diagnoseServer now streams one partial fault fragment per command as it completes
         // (see services/api.js) rather than one final blob — accumulate them the same way App.jsx
         // does and only highlight once the stream ends, so this still reads as one atomic result.
+        // Doesn't drive the {type:'confirm'} interactive follow-up App.jsx does (no UI here to ask
+        // the user) — a targeted check finding nothing just means nothing to highlight, which is
+        // already this component's normal "no faults" behavior.
         let accumulated = EMPTY_FAULTS;
-        await diagnoseServer('server-1', serialNumber, undefined, undefined, false, (event) => {
+        await diagnoseServer('server-1', serialNumber, undefined, undefined, false, false, (event) => {
           if (event.type === 'partial') accumulated = mergeFaultsClient(accumulated, event.faults);
         });
         onHighlight?.({ faults: accumulated });

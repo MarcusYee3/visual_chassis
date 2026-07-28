@@ -65,12 +65,18 @@ export const validateSerialNumber = async (sn) => {
 // each line as it arrives, in order; event.type is one of:
 //   'partial' {label, faults, raw}        — merge `faults` into the running total immediately
 //   'fatal'   {error}                     — unrecoverable (e.g. ILOM down); stream ends after this
+//   'confirm' {message}                   — stream ends after this; a matched targeted check (or
+//                                            the CHECK_POWER_ON/UPDATE_HOSTNIC_FW_REMOTE pairing's
+//                                            DAC-cable check) found no real fault, so ask the user
+//                                            whether to continue — if yes, call this again with
+//                                            continueToDefault:true to run the default chain
 //   'done'    {source, defaultFlowNotice} — stream finished, these are the final status fields
-export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink, bypassPowerState, onEvent) => {
+export const diagnoseServer = async (serverId, serialNumber, ilomIp, jiraLink, bypassPowerState, continueToDefault, onEvent) => {
   const params = new URLSearchParams({ serialNumber });
   if (ilomIp) params.set('ilomIp', ilomIp);
   if (jiraLink) params.set('jiraLink', jiraLink);
   if (bypassPowerState) params.set('bypassPowerState', '1');
+  if (continueToDefault) params.set('continueToDefault', '1');
   const response = await fetch(`${API_BASE}/servers/${serverId}/diagnose?${params}`);
   if (!response.ok) {
     // Only the pre-stream validation checks (missing/invalid serial number) respond this way —
