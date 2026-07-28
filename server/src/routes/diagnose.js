@@ -611,6 +611,25 @@ async function runPowerOnCheck(serialNumber, options = {}) {
     };
   }
 
+  // A down HOSTNIC (the host's own network interface) plausibly explains a PS0/PS1 0A/0V reading
+  // below without either PSU being genuinely broken — confirmed against real hardware, SN
+  // 2629YW10JZ, 2026-07-28: eve_ip reported HOSTNIC down (ILOM/ROT still up) and this exact unit's
+  // PS1 later read 0A on its main rail. Checked unconditionally, not just when a Jira ticket
+  // happens to pair CHECK_POWER_ON with UPDATE_HOSTNIC_FW_REMOTE in its own text (the previous,
+  // too-narrow trigger) — HOSTNIC's state is relevant context for interpreting the power-rail
+  // reading regardless of what the ticket says. Reuses the same eve_ip output already fetched for
+  // the ILOM row above, no extra round trip.
+  const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
+  if (hostnicRowMatch) {
+    const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
+    if (!/^up$/i.test(hostnicStatus)) {
+      return {
+        faults: { ...emptyFaults, genericErrors: [`POWER_ON check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
+        raw: eveOut,
+      };
+    }
+  }
+
   const ilomUser = process.env.ILOM_USER || 'root';
   const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
 
@@ -653,43 +672,6 @@ async function runPowerOnCheck(serialNumber, options = {}) {
   return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}` };
 }
 
-// Targeted flow for a POWER_ON failure paired with a remote HOSTNIC firmware-update failure in
-// the same Jira ticket (Failed Testcase/summary reading e.g.
-// "5_CHECK_POWER_ON-7_UPDATE_HOSTNIC_FW_REMOTE" — see describeJiraFlow below, which detects this
-// specific pairing). UPDATE_HOSTNIC_FW_REMOTE needs the host's own network interface (HOSTNIC) up
-// to run at all, so a down HOSTNIC link plausibly explains both failures firing together without
-// either being a real PS0/PS1 power-rail fault — check eve_ip's own HOSTNIC row *first*, since
-// it's near-instant compared to the full hwdiag power-rail SSH flow. Only when that quick check
-// doesn't explain it (HOSTNIC row missing or reporting up) does this fall through to the normal
-// runPowerOnCheck flow — the power-rail check still needs to run in that case, since the pairing
-// alone doesn't rule out a real power-rail fault.
-async function runPowerOnHostnicPairedCheck(serialNumber, options = {}) {
-  console.log(`[diagnose] running CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired flow for ${serialNumber}: eve_ip HOSTNIC status first, then power-rail check if needed`);
-  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
-
-  const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-  const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-  if (hostnicRowMatch) {
-    const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
-    if (!/^up$/i.test(hostnicStatus)) {
-      return {
-        faults: {
-          ...emptyFaults,
-          genericErrors: [`CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE paired failure: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`],
-        },
-        raw: eveOut,
-      };
-    }
-  } else {
-    console.log(`[diagnose] CHECK_POWER_ON + UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} in eve_ip output — falling through to the power-rail check`);
-  }
-
-  // HOSTNIC is up (or its row wasn't found at all) — the down-cable theory doesn't hold, so run
-  // the real power-rail check same as an unpaired CHECK_POWER_ON would.
-  const powerResult = await runPowerOnCheck(serialNumber, options);
-  return { faults: powerResult.faults, raw: `${eveOut}\n${powerResult.raw}` };
-}
-
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
 // its specific command/script and output format are known, instead of falling back to the
 // generic "not ILOM-observable" message below.
@@ -697,7 +679,6 @@ const MFG_COLLECTOR_TARGETED_CHECKS = {
   VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
   UPDATE_GXR3_FW: runGxr3FwUpdateCheck,
   CHECK_POWER_ON: runPowerOnCheck,
-  CHECK_POWER_ON_HOSTNIC_DAC: runPowerOnHostnicPairedCheck,
 };
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
@@ -999,19 +980,6 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
-  // A ticket that pairs CHECK_POWER_ON with UPDATE_HOSTNIC_FW_REMOTE (e.g. Failed Testcase
-  // "5_CHECK_POWER_ON-7_UPDATE_HOSTNIC_FW_REMOTE") usually isn't a real power-rail problem —
-  // UPDATE_HOSTNIC_FW_REMOTE needs the host's own network interface (HOSTNIC) up to even run, so a
-  // down HOSTNIC link plausibly explains both failing together. Route this specific pairing to the
-  // fast eve_ip-only check instead of the full hwdiag power-rail flow below; must be checked before
-  // the broad "POWER_ON" text match below, since a checkName like "CHECK_POWER_ON" always contains
-  // that substring and would otherwise always win first.
-  const hasPowerOnCode = info.checkCodes.some((c) => c.checkName === 'CHECK_POWER_ON');
-  const hasHostnicFwCode = info.checkCodes.some((c) => c.checkName === 'UPDATE_HOSTNIC_FW_REMOTE');
-  if (hasPowerOnCode && hasHostnicFwCode) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON_HOSTNIC_DAC`, targetedCheckName: 'CHECK_POWER_ON_HOSTNIC_DAC' };
-  }
-
   // "POWER_ON" (e.g. a "Failed Testcase: 11_POWER_ON" description field, or the
   // HOST_POWER_ON_PRETEST stage) is matched by exact checkName below when it fits the numbered
   // <N>_<CHECKNAME> shape, but not every ticket phrases it that way — scan the summary, the
@@ -1159,7 +1127,7 @@ router.get('/', async (req, res) => {
   // ?bypassPowerState=1 lets the user skip the POWER_ON check's own /SYS power_state gate (see
   // runPowerOnCheck) and get the hwdiag power-rail reading regardless of what /SYS currently
   // reports. Passed unconditionally to every targeted check below — every check besides
-  // runPowerOnCheck/runPowerOnHostnicPairedCheck simply ignores the extra options argument.
+  // runPowerOnCheck simply ignores the extra options argument.
   const checkOptions = { bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true' };
   // Runs one targeted check and reports it as a partial either way — a thrown error (e.g. a
   // localExec/runIlomSession timeout) becomes a genericErrors fragment naming the check instead of
@@ -1278,12 +1246,7 @@ router.get('/', async (req, res) => {
     // unconditionally — Open_Problems/fmadm/hwdiag below, plus every targeted check in Step 3's
     // loop (the OSFP loopback check lionking_OSFP.py, the GXR3 firmware check
     // gxr3_fw_update_check, and the POWER_ON power-rail check runPowerOnCheck) — not just the ones
-    // a mfg-collector/Jira match happened to name. The one exception is
-    // CHECK_POWER_ON_HOSTNIC_DAC: it isn't a standalone command, it's routing logic for one
-    // specific Jira pairing (see describeJiraFlow), and its own fallback already re-runs
-    // runPowerOnCheck internally — sweeping it in here too would just pay for the same power-rail
-    // SSH session a second time for no new information.
-    const excludedTargetedChecks = ['CHECK_POWER_ON_HOSTNIC_DAC'];
+    // a mfg-collector/Jira match happened to name.
 
     // Step 1: check ILOM status via eve_ip unconditionally — even when ilomIpParam was already
     // supplied (e.g. by /validate-sn, whose own ILOM regex only checks that an ILOM row exists,
@@ -1440,10 +1403,6 @@ router.get('/', async (req, res) => {
     }
 
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
-      if (excludedTargetedChecks.includes(checkName)) {
-        console.log(`[diagnose] skipping targeted check ${checkName} for ${serialNumber} — only runs on a specific mfg-collector match or ?forceCheck=, not as part of the default chain`);
-        continue;
-      }
       console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
       await runAndReportCheck(checkName, targetedCheck);
     }
