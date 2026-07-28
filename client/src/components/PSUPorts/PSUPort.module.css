@@ -1,6 +1,6 @@
 .port {
   width: 100%;
-  height: 68px;
+  height: 46px;
   /* Teal, not red — a red backplate on a healthy PSU port read as indistinguishable from the
      .faulted glow below at a glance. Matches the PSU category header color in ServerOverview.jsx. */
   background-image:
@@ -13,7 +13,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -38,9 +38,9 @@
 
 .label {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 8px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #aaa;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);

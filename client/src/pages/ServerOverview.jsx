@@ -158,7 +158,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
   // OSFP_SLOT_TO_IOU[1..4]). Real port ids are reused as-is; only the displayed label changes.
   const allOsfpPorts = osfpModules.flatMap((m) => m.pciePorts || []);
 
-  const fontStyle = { fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase' };
+  const fontStyle = { fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' };
 
   const bmcFaulted = has('bmc');
   const rotFaulted = has('rot');
@@ -201,33 +201,56 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                     const iouA = OSFP_SLOT_TO_IOU[slotA];
                     const iouB = OSFP_SLOT_TO_IOU[slotB];
                     const cableFaulted = (faults.cableFaults || []).includes(`cable-${iouA}-${iouB}`);
+                    const cableColor = cableFaulted ? '#ff4444' : '#5a7ab0';
+                    // Same plug-and-dotted-line look as the Motherboard cable and the OSFP<->IOU
+                    // reveal below, so the physical loopback cable between a pair's two OSFP
+                    // modules actually reads as a cable instead of just a text label.
+                    const cablePlugStyle = {
+                      width: '3px', height: '10px', borderRadius: '1px', flexShrink: 0,
+                      background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
+                      border: `1px solid ${cableColor}`,
+                      boxShadow: cableFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
+                    };
                     return (
                       <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                        <div style={{ display: 'flex', gap: '3px' }}>
-                          {[slotA, slotB].map((slot) => {
+                        <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                          {[slotA, slotB].map((slot, idx) => {
                             const iou = OSFP_SLOT_TO_IOU[slot];
                             const port = allOsfpPorts[slot - 1];
                             const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
                               || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
                             return (
-                              <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
-                                  onClick={() => handleOsfpSlotClick(slot)}
-                                  hasFault={hasFault} />
-                                {expandedOsfpSlot[slot] && (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                                    title={`OSFP ${slot} <-> IOU ${iou}`}>
-                                    <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+                              <div key={slot} style={{ display: 'flex', alignItems: 'flex-start', flex: 1 }}>
+                                {idx === 1 && (
+                                  <div style={{ display: 'flex', alignItems: 'center', width: '18px', flexShrink: 0, marginTop: '16px' }}
+                                    title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${cableFaulted ? ' — DOWN' : ''}`}>
+                                    <div style={cablePlugStyle} />
                                     <div style={{
-                                      fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
-                                      letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
-                                      border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
-                                      whiteSpace: 'nowrap',
-                                    }}>
-                                      IOU {iou}
-                                    </div>
+                                      flex: 1, height: 0, borderTop: `2px dotted ${cableColor}`,
+                                      filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+                                    }} />
+                                    <div style={cablePlugStyle} />
                                   </div>
                                 )}
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                  <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
+                                    onClick={() => handleOsfpSlotClick(slot)}
+                                    hasFault={hasFault} />
+                                  {expandedOsfpSlot[slot] && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
+                                      title={`OSFP ${slot} <-> IOU ${iou}`}>
+                                      <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+                                      <div style={{
+                                        fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
+                                        letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
+                                        border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
+                                        whiteSpace: 'nowrap',
+                                      }}>
+                                        IOU {iou}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
@@ -272,17 +295,17 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
 
             {/* Left: E1S A + BMC + ROT */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <E1SBoard id="e1s-a" name="8x E1S A" faulted={faults.e1sIds.includes('e1s-a')} />
+              <E1SBoard id="e1s-a" name="E1S A" faulted={faults.e1sIds.includes('e1s-a')} />
               <div id="bmc-card" style={{
                 flex: 1,
                 backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(192,132,252,0.07) 0.5px, transparent 0.5px), linear-gradient(180deg, #1e1a30 0%, #161228 100%)',
                 backgroundSize: '6px 6px, 100% 100%',
                 border: bmcFaulted ? faultBorder : '1px solid #3a2a50',
                 boxShadow: bmcFaulted ? faultGlow : 'none',
-                borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '8px', padding: '0 8px', minHeight: '40px',
+                borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '5px', padding: '0 5px', minHeight: '26px',
                 animation: bmcFaulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
               }}>
-                <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: bmcFaulted ? '#ff4444' : '#c084fc', boxShadow: bmcFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(192,132,252,0.5)', flexShrink: 0 }} />
+                <div style={{ width: '3px', height: '3px', borderRadius: '50%', background: bmcFaulted ? '#ff4444' : '#c084fc', boxShadow: bmcFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(192,132,252,0.5)', flexShrink: 0 }} />
                 <span style={{ ...fontStyle, color: bmcFaulted ? '#ff9999' : '#7a5aaa' }}>BMC Card</span>
               </div>
               <div id="rot-card" style={{
@@ -290,10 +313,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                 backgroundSize: '6px 6px, 100% 100%',
                 border: rotFaulted ? faultBorder : '1px solid #2a3040',
                 boxShadow: rotFaulted ? faultGlow : 'none',
-                borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 8px',
+                borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '5px', padding: '5px',
                 animation: rotFaulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
               }}>
-                <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: rotFaulted ? '#ff4444' : '#fbbf24', boxShadow: rotFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(251,191,36,0.4)', flexShrink: 0 }} />
+                <div style={{ width: '3px', height: '3px', borderRadius: '50%', background: rotFaulted ? '#ff4444' : '#fbbf24', boxShadow: rotFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(251,191,36,0.4)', flexShrink: 0 }} />
                 <span style={{ ...fontStyle, color: rotFaulted ? '#ff9999' : '#607090' }}>ROT 4.1</span>
               </div>
             </div>
@@ -350,7 +373,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
 
             {/* Right: E1S B + filler */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <E1SBoard id="e1s-b" name="8x E1S B" faulted={faults.e1sIds.includes('e1s-b')} />
+              <E1SBoard id="e1s-b" name="E1S B" faulted={faults.e1sIds.includes('e1s-b')} />
               <div style={{ flex: 1, background: 'linear-gradient(180deg, #161a1e 0%, #0e1114 100%)', border: '1px solid #222628', borderRadius: '2px' }} />
             </div>
           </div>
