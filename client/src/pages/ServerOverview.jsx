@@ -75,6 +75,13 @@ const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
 // order (mirrors server/src/routes/diagnose.js's OSFP_CABLE_SLOT_PAIRS) — labeled "CABLE 1-2" etc.
 // below, by slot number rather than the IOU numbers on either end.
 const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
+// The two physical OSFP boards this chassis actually has — OSFP BD 1 carries slots 1-4 (its 2
+// cable pairs), OSFP BD 2 carries slots 5-8, matching the original backend osfpModules grouping
+// (server/src/data/serverData.js's "osfp-1"/"osfp-2").
+const OSFP_BD_GROUPS = [
+  { name: 'OSFP BD 1', pairs: OSFP_CABLE_SLOT_PAIRS.slice(0, 2) },
+  { name: 'OSFP BD 2', pairs: OSFP_CABLE_SLOT_PAIRS.slice(2, 4) },
+];
 
 // Each CPU (P0/P1) carries 16 DIMM slots (D0-D15) across 4 memory controllers of 4 DIMMs each,
 // per the real captured "CPU <p> Memory Controller <m>" hwdiag fabric-test output — see
@@ -171,54 +178,72 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start' }}>
       <ServerContainer label={`${server.name} — SN: ${server.serialNumber}`}>
 
-        {/* GBB Tray — always shown flat (no collapsed tray box to click through) */}
+        {/* GBB Tray — always shown flat (no collapsed tray box to click through). Grouped into
+            the 2 physical OSFP BDs (BD 1 = OSFP 1-4, BD 2 = OSFP 5-8), each holding its own 2
+            cable pairs. */}
         <div style={{ width: '100%' }}>
           <div style={categoryHeaderStyle('blue')}>GBB Tray</div>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            {OSFP_CABLE_SLOT_PAIRS.map(([slotA, slotB]) => {
-              const iouA = OSFP_SLOT_TO_IOU[slotA];
-              const iouB = OSFP_SLOT_TO_IOU[slotB];
-              const cableFaulted = (faults.cableFaults || []).includes(`cable-${iouA}-${iouB}`);
-              return (
-                <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {[slotA, slotB].map((slot) => {
-                      const iou = OSFP_SLOT_TO_IOU[slot];
-                      const port = allOsfpPorts[slot - 1];
-                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
-                        || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
-                      return (
-                        <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
-                            onClick={() => handleOsfpSlotClick(slot)}
-                            hasFault={hasFault} />
-                          {expandedOsfpSlot[slot] && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                              title={`OSFP ${slot} <-> IOU ${iou}`}>
-                              <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
-                              <div style={{
-                                fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
-                                letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
-                                border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
-                                whiteSpace: 'nowrap',
-                              }}>
-                                IOU {iou}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div style={{
-                    fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
-                    letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab', textAlign: 'center',
-                  }}>
-                    CABLE {slotA}-{slotB}
-                  </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {OSFP_BD_GROUPS.map((bd) => (
+              <div key={bd.name} style={{
+                flex: 1, display: 'flex', flexDirection: 'column', gap: '4px',
+                padding: '5px', borderRadius: '4px', border: '1px solid #2a3a50',
+                background: 'rgba(36,61,100,0.14)',
+              }}>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                  letterSpacing: '0.06em', textTransform: 'uppercase', color: '#7a92bd', textAlign: 'center',
+                }}>
+                  {bd.name}
                 </div>
-              );
-            })}
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  {bd.pairs.map(([slotA, slotB]) => {
+                    const iouA = OSFP_SLOT_TO_IOU[slotA];
+                    const iouB = OSFP_SLOT_TO_IOU[slotB];
+                    const cableFaulted = (faults.cableFaults || []).includes(`cable-${iouA}-${iouB}`);
+                    return (
+                      <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        <div style={{ display: 'flex', gap: '3px' }}>
+                          {[slotA, slotB].map((slot) => {
+                            const iou = OSFP_SLOT_TO_IOU[slot];
+                            const port = allOsfpPorts[slot - 1];
+                            const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
+                              || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
+                            return (
+                              <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
+                                  onClick={() => handleOsfpSlotClick(slot)}
+                                  hasFault={hasFault} />
+                                {expandedOsfpSlot[slot] && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
+                                    title={`OSFP ${slot} <-> IOU ${iou}`}>
+                                    <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+                                    <div style={{
+                                      fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
+                                      letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
+                                      border: '1px solid #333', borderRadius: '2px', padding: '1px 4px',
+                                      whiteSpace: 'nowrap',
+                                    }}>
+                                      IOU {iou}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                          letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab', textAlign: 'center',
+                        }}>
+                          CABLE {slotA}-{slotB}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 

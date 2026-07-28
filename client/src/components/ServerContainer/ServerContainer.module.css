@@ -1,13 +1,14 @@
 /* Fixed at exactly the chassis's own width (not the whole decorated assembly) so that when a
-   parent flex container centers this box, the colored chassis body lands on the same center
-   line as other 740px-wide content elsewhere in the app (the form, the fault banners, etc.) —
-   the U-label legend and rack ears are pulled out via absolute positioning below so they hang
-   off the sides without affecting this box's width/centering. Previously they were laid out as
-   ordinary flex siblings, which added their width asymmetrically (both on the left) and visibly
-   shifted the chassis right of center. */
+   parent flex container centers this box, the colored chassis body lands on a predictable center
+   line — the U-label legend and rack ears are pulled out via absolute positioning below so they
+   hang off the sides without affecting this box's width/centering. Previously they were laid out
+   as ordinary flex siblings, which added their width asymmetrically (both on the left) and
+   visibly shifted the chassis right of center. Widened from the original 740px (which other
+   740px-wide content elsewhere in the app, like the form and fault banners, was matched to) once
+   the GBB Tray's 8-wide OSFP row plus its OSFP-BD grouping boxes stopped fitting inside it. */
 .outer {
   position: relative;
-  width: 740px;
+  width: 900px;
   /* Only the float animation lives here, not the glow (see .chassis below) — .outer's silhouette
      includes the absolutely-positioned U-labels/rack ears (they're its children, positioned
      outside its 740px box), so a filter set here traces around *them* too, reading as a stray
@@ -89,7 +90,7 @@
 
 /* Main chassis */
 .chassis {
-  width: 740px;
+  width: 900px;
   position: relative;
   display: flex;
   flex-direction: column;
