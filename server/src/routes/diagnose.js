@@ -684,6 +684,35 @@ async function runPowerOnCheck(serialNumber, options = {}) {
   return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}` };
 }
 
+// Targeted flow for an UPDATE_HOSTNIC_FW_REMOTE-class failure — that check needs the host's own
+// network interface (HOSTNIC) up to even run, so whenever it's mentioned (a mfg-collector match,
+// or this checkName appearing among a Jira ticket's own check codes — see describeJiraFlow), verify
+// HOSTNIC directly via eve_ip and prompt to check the DAC cable if it's down. This is the same
+// HOSTNIC check already folded into runPowerOnCheck above, as its own standalone targeted flow —
+// covers a ticket that names UPDATE_HOSTNIC_FW_REMOTE on its own, without also naming
+// CHECK_POWER_ON (which is the only other place this app currently checks HOSTNIC). Also means the
+// default chain's Step 3 sweep (which runs every entry in MFG_COLLECTOR_TARGETED_CHECKS
+// unconditionally) now checks HOSTNIC on every diagnosis, not just Jira-matched ones.
+async function runHostnicCheck(serialNumber) {
+  console.log(`[diagnose] running UPDATE_HOSTNIC_FW_REMOTE check flow for ${serialNumber}: eve_ip HOSTNIC status`);
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+
+  const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+  const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
+  if (!hostnicRowMatch) {
+    return { faults: { ...emptyFaults, genericErrors: [`UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} in eve_ip output`] }, raw: eveOut };
+  }
+  const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
+  if (!/^up$/i.test(hostnicStatus)) {
+    return {
+      faults: { ...emptyFaults, genericErrors: [`UPDATE_HOSTNIC_FW_REMOTE check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
+      raw: eveOut,
+    };
+  }
+  console.log(`[diagnose] UPDATE_HOSTNIC_FW_REMOTE check: HOSTNIC (${hostnicIp}) is up`);
+  return { faults: emptyFaults, raw: eveOut };
+}
+
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
 // its specific command/script and output format are known, instead of falling back to the
 // generic "not ILOM-observable" message below.
@@ -691,6 +720,7 @@ const MFG_COLLECTOR_TARGETED_CHECKS = {
   VERIFY_OSFP_LINKS: runLionkingOSFPCheck,
   UPDATE_GXR3_FW: runGxr3FwUpdateCheck,
   CHECK_POWER_ON: runPowerOnCheck,
+  UPDATE_HOSTNIC_FW_REMOTE: runHostnicCheck,
 };
 
 // mfg-collector.hyvesolutions.org/out/out.evelionking_all.php publishes a live table of every
