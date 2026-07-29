@@ -941,17 +941,64 @@ function parseHwdiagIoCableFaults(text) {
 // as trustworthy as a real resource path.
 const PART_MENTION_RE = /\b(pcie|psu|dimm|iou|fan|fm|fs|ps|d)[\s#-]{0,2}(\d{1,3})\b/gi;
 
-function parseGenericPartMentions(text) {
+// excludeTokens lets a caller that already ran a more specific parser (e.g.
+// parseIouFruPositionFaults) over the same text suppress the redundant, vaguer mention it would
+// otherwise also produce for the same part+number (e.g. skip "IOU6" here once the FRU-mismatch
+// parser has already explained exactly what's wrong with IOU6).
+function parseGenericPartMentions(text, excludeTokens = new Set()) {
   const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const seen = new Set();
   let m;
   while ((m = PART_MENTION_RE.exec(text)) !== null) {
     const token = `${m[1].toUpperCase()}${m[2]}`;
-    if (seen.has(token)) continue;
+    if (seen.has(token) || excludeTokens.has(token)) continue;
     seen.add(token);
     faults.genericErrors.push(`Ticket comment mentions ${token} — verify against live diagnostics before assuming this is the fault`);
   }
   return { faults, raw: text };
+}
+
+// CHECK_IOU_FRU compares each IOU's expected position (the "base_record", i.e. what the build
+// config says should be installed) against what SFCS (the factory's system-level tracking record)
+// actually sees — a mismatch means the physical IOU module isn't seated where it's supposed to be.
+// Confirmed against a real ticket, MFGS-525635, 2026-05-23, SN 2621YW11TJ: both the ticket's
+// Description ("*Failure Message:*") and a technician's follow-up comment carried the identical
+// text (just reflowed — newlines in the Description, single-line inside the comment's {code}
+// block), e.g.:
+//   Position based on base_record: Device None
+//       /SYS/IOU6 (Position According BaseRecord)
+//       MISSING (Position From SFCS)
+//   Check Result: FAIL
+// "MISSING" here means SFCS never detected the module at all — the fix is a physical reseat, not a
+// firmware/cable action, so the message says so directly rather than the vaguer "verify against
+// live diagnostics" wording parseGenericPartMentions uses for a bare, unconfirmed number mention.
+function parseIouFruPositionFaults(text) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  // Handed back to the caller so it can tell parseGenericPartMentions to skip re-mentioning these
+  // same IOUs with its vaguer, unconfirmed-number wording.
+  const matchedTokens = new Set();
+
+  // The identical text often appears twice in the same ticket (the Description's own "Failure
+  // Message" and a technician's follow-up comment quoting it back) — dedupe by IOU number so that
+  // doesn't turn into two copies of the same genericError.
+  const reportedIous = new Set();
+  const re = /Position based on base_record:\s*Device\s+\S+\s*\/SYS\/IOU(\d+)\s*\(Position According BaseRecord\)\s*(\S+)\s*\(Position From SFCS\)\s*Check Result:\s*(PASS|FAIL)/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const [, iouNum, sfcsStatus, result] = m;
+    matchedTokens.add(`IOU${iouNum}`);
+    if (result.toUpperCase() !== 'FAIL' || reportedIous.has(iouNum)) continue;
+    reportedIous.add(iouNum);
+    const verb = /^missing$/i.test(sfcsStatus) ? 'reseat' : 'reseat and reverify';
+    faults.genericErrors.push(
+      `CHECK_IOU_FRU: IOU${iouNum} reported ${sfcsStatus.toUpperCase()} (expected per base_record, not confirmed by SFCS) — ${verb} IOU${iouNum}`
+    );
+    addComp('gbb');
+  }
+
+  return { faults, raw: text, matchedTokens };
 }
 
 // This EVE BOT-generated ticket pipeline stores its machine-parseable failure detail in the
@@ -994,16 +1041,27 @@ async function fetchJiraCheckInfo(jiraLink) {
   if (!res.ok) throw new Error(`Jira returned HTTP ${res.status}`);
   const data = await res.json();
   const summary = data?.fields?.summary || '';
-  const descriptionFields = parseJiraDescriptionFields(data?.fields?.description);
+  const description = data?.fields?.description || '';
+  const descriptionFields = parseJiraDescriptionFields(description);
   const failedTestcase = descriptionFields.get('Failed Testcase') || '';
   const failureMessage = descriptionFields.get('Failure Message') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
-  // comment's "body" (the Jira API's field name for that comment's text) so both parsers below can
+  // comment's "body" (the Jira API's field name for that comment's text) so the parsers below can
   // scan across all of them regardless of which comment it was pasted into.
   const commentsText = (data?.fields?.comment?.comments || []).map((c) => c.body || '').join('\n\n');
-  const cableFaultsResult = parseHwdiagIoCableFaults(commentsText);
-  const mentionsResult = parseGenericPartMentions(commentsText);
+  // The actual failure detail isn't always in a comment at all — a real CHECK_IOU_FRU ticket
+  // (MFGS-525635, 2026-05-23) carried the identical "Position based on base_record..." text in
+  // *both* the Description and a follow-up comment. The raw `description` string is included here
+  // (not just the field-extracted `failureMessage`) because parseJiraDescriptionFields only ever
+  // captures a single-line value per "*Label:*" — the multi-line continuation of "Failure Message"
+  // (the "Device None" / "/SYS/IOU6 ..." / "Check Result: FAIL" lines) is real Description text
+  // parseJiraDescriptionFields silently drops, so failureMessage alone would have missed it on a
+  // ticket that never repeated the same text in a comment.
+  const diagnosticText = [summary, failedTestcase, failureMessage, description, commentsText].join('\n\n');
+  const cableFaultsResult = parseHwdiagIoCableFaults(diagnosticText);
+  const iouFruResult = parseIouFruPositionFaults(diagnosticText);
+  const mentionsResult = parseGenericPartMentions(diagnosticText, iouFruResult.matchedTokens);
   return {
     key: data.key || jiraLink,
     summary,
@@ -1013,13 +1071,18 @@ async function fetchJiraCheckInfo(jiraLink) {
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
     commentsText,
-    // Merge the structured hwdiag_io_cables transcript hits with the looser plain-prose part
-    // mentions into one faults object — describeJiraFlow below treats any genericError here as
-    // "this ticket already documents a fault, skip the ILOM chain" regardless of which parser
-    // produced it.
+    // Merge every parser's hits into one faults object — describeJiraFlow below treats any
+    // genericError here as "this ticket already documents a fault, skip the ILOM chain" regardless
+    // of which parser produced it. Order matters: the specific CHECK_IOU_FRU message goes first so
+    // it's what a technician sees before the looser, less-confident bare "IOU6" mention.
     cableFaults: {
       ...cableFaultsResult.faults,
-      genericErrors: [...cableFaultsResult.faults.genericErrors, ...mentionsResult.faults.genericErrors],
+      genericErrors: [
+        ...cableFaultsResult.faults.genericErrors,
+        ...iouFruResult.faults.genericErrors,
+        ...mentionsResult.faults.genericErrors,
+      ],
+      components: [...new Set([...cableFaultsResult.faults.components, ...iouFruResult.faults.components])],
     },
   };
 }
