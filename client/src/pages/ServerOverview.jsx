@@ -56,13 +56,6 @@ const faultBorder = '1px solid #ff4444';
 // tray. A third, wider/softer outer layer plus higher opacities makes a fault visibly jump out.
 const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
 
-// Checked once at module load (not per-render) since it can't change without a page reload —
-// used to skip the floating Motherboard panel's continuous bob animation for users who've asked
-// for reduced motion, since it's driven by an inline style (not a CSS module) and so can't rely
-// on a @media query the way ServerContainer's own animations do.
-const prefersReducedMotion = typeof window !== 'undefined'
-  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-
 // Same physical OSFP-slot -> IOU convention as server/src/routes/diagnose.js's own
 // OSFP_SLOT_TO_IOU (which parses lionking_OSFP.py's loopback link results) — each numbered OSFP
 // slot is one end of a physical loopback cable pairing two IOU ports:
@@ -434,7 +427,6 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
               backgroundSize: '6px 6px, 100% 100%',
               border: mbFaulted ? faultBorder : '1px solid #5a4520',
               boxShadow: mbFaulted ? faultGlow : '0 4px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
-              animation: prefersReducedMotion ? 'none' : 'motherboardFloat 5s ease-in-out infinite',
               transition: 'width 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
             }}
           >

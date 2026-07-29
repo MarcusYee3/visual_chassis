@@ -42,13 +42,3 @@ h1 span {
     box-shadow: 0 0 26px rgba(255, 68, 68, 1), 0 0 52px rgba(255, 68, 68, 0.6), 0 0 78px rgba(255, 68, 68, 0.25);
   }
 }
-
-/* Motherboard is an external unit floating beside the chassis (linked in via cable, not
-   rack-mounted) — a plain translateY bob, out of phase with the chassis's own float animation
-   (different duration) so the two don't look mechanically synced. ServerOverview.jsx checks
-   prefers-reduced-motion in JS before applying this inline (an attribute-selector override
-   wouldn't reliably win against an inline style's specificity). */
-@keyframes motherboardFloat {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
