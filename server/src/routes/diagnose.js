@@ -928,6 +928,32 @@ function parseHwdiagIoCableFaults(text) {
   return { faults, raw: text };
 }
 
+// A technician doesn't always paste a structured hwdiag_io_cables transcript into the ticket —
+// sometimes the comment is just plain prose ("PSU3 is dead", "Fan 12 not spinning", "IOU5 link
+// down"). This catches those looser mentions the same way the real SSH-output parsers above key
+// off a part prefix immediately followed by a number (PSU<n>, FANB<n>/FM<n>, /SYS/MB/P<n>/D<n>,
+// IOU<n>/PCIE<n>, etc.), just without requiring the full /SYS/... resource path — only a bare
+// "<word> <number>". Longer/more specific tokens are listed before their prefixes in the
+// alternation (pcie before ps, dimm before d) since JS regex alternation takes the first
+// alternative that matches at a position, not the longest, so "psu3" must try "psu" before "ps"
+// or it would only ever capture "su3" was PS and drop the U. Deliberately loose (feeds
+// genericErrors, not a specific component highlight) since a bare token+number in free text isn't
+// as trustworthy as a real resource path.
+const PART_MENTION_RE = /\b(pcie|psu|dimm|iou|fan|fm|fs|ps|d)[\s#-]{0,2}(\d{1,3})\b/gi;
+
+function parseGenericPartMentions(text) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const seen = new Set();
+  let m;
+  while ((m = PART_MENTION_RE.exec(text)) !== null) {
+    const token = `${m[1].toUpperCase()}${m[2]}`;
+    if (seen.has(token)) continue;
+    seen.add(token);
+    faults.genericErrors.push(`Ticket comment mentions ${token} — verify against live diagnostics before assuming this is the fault`);
+  }
+  return { faults, raw: text };
+}
+
 // This EVE BOT-generated ticket pipeline stores its machine-parseable failure detail in the
 // *description* field as Jira wiki-markup "*Label:* value" lines (one per line, blank-line
 // separated) — not as dedicated custom fields, e.g.:
@@ -973,9 +999,11 @@ async function fetchJiraCheckInfo(jiraLink) {
   const failureMessage = descriptionFields.get('Failure Message') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
-  // comment body so parseHwdiagIoCableFaults can scan across all of them regardless of which
-  // comment it was pasted into.
+  // comment's "body" (the Jira API's field name for that comment's text) so both parsers below can
+  // scan across all of them regardless of which comment it was pasted into.
   const commentsText = (data?.fields?.comment?.comments || []).map((c) => c.body || '').join('\n\n');
+  const cableFaultsResult = parseHwdiagIoCableFaults(commentsText);
+  const mentionsResult = parseGenericPartMentions(commentsText);
   return {
     key: data.key || jiraLink,
     summary,
@@ -985,7 +1013,14 @@ async function fetchJiraCheckInfo(jiraLink) {
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
     commentsText,
-    cableFaults: parseHwdiagIoCableFaults(commentsText).faults,
+    // Merge the structured hwdiag_io_cables transcript hits with the looser plain-prose part
+    // mentions into one faults object — describeJiraFlow below treats any genericError here as
+    // "this ticket already documents a fault, skip the ILOM chain" regardless of which parser
+    // produced it.
+    cableFaults: {
+      ...cableFaultsResult.faults,
+      genericErrors: [...cableFaultsResult.faults.genericErrors, ...mentionsResult.faults.genericErrors],
+    },
   };
 }
 
