@@ -405,15 +405,15 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
       </ServerContainer>
 
         {/* Motherboard — external unit, cabled to the IOB Tray rather than rack-mounted (its
-            DIMMs live on a separate physical head node, not this chassis). The outer row used to
-            be alignItems:'center', which centered the cable against the *panel's own* height —
-            fine when collapsed (~35px tall) but wrong once expanded (~300+px tall with the DIMM
-            grids), since centering against a much taller box moves the visual center much further
-            down. flex-start plus a fixed marginTop on the cable wrapper itself (independent of the
-            panel's height) keeps the cable pointing at the same spot in both states. */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', marginTop: '326px', flexShrink: 0 }}
+            DIMMs live on a separate physical head node, not this chassis). alignItems:'center'
+            keeps the cable and the panel always vertically centered against each other (so they
+            never visually detach), but that means the row's marginTop has to change with the
+            panel's own height (~35px collapsed vs ~300+px expanded with the DIMM grids) to keep
+            the *center* of the row landing on the same fixed point (the IOB Tray) in both states —
+            a single fixed marginTop only works for one state. */}
+        <div style={{ display: 'flex', alignItems: 'center', marginTop: expandedMb ? '295px' : '505px', flexShrink: 0 }}
           title={`Head node motherboard — linked via cable${mbFaulted ? ' — FAULT' : ''}`}>
-          <div style={{ display: 'flex', alignItems: 'center', width: '46px', flexShrink: 0, marginTop: '190px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', width: '46px', flexShrink: 0 }}>
             <div style={mbPlugStyle} />
             <div style={{
               flex: 1, height: 0,
