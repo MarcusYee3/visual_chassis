@@ -1022,6 +1022,25 @@ function parseJiraDescriptionFields(description) {
   return fields;
 }
 
+// "Failure Message" is the one field on this EVE BOT template that's genuinely multi-line — e.g.
+// a real CHECK_IOU_FRU ticket (MFGS-525635, 2026-05-23, SN 2621YW11TJ):
+//   *Failure Message:* Position based on base_record:
+//   Device None
+//       /SYS/IOU6 (Position According BaseRecord)
+//       MISSING (Position From SFCS)
+//   Check Result: FAIL.
+//
+//   *GUTI:* ...
+// parseJiraDescriptionFields above deliberately only ever takes the rest of that *same line* (see
+// its own comment for why), so descriptionFields.get('Failure Message') alone would only ever
+// return "Position based on base_record:" — dropping the "/SYS/IOU6 ... MISSING ... Check Result:
+// FAIL" lines that actually name the fault. This captures everything up to the next blank line
+// (Jira's own field separator) or the next "*Label:*" line, whichever comes first.
+function extractJiraFullFailureMessage(description) {
+  const m = (description || '').match(/\*Failure Message:\*[ \t]*([\s\S]*?)(?=\n[ \t]*\n|\n\*[^*\n]+:\*|$)/i);
+  return m ? m[1].trim() : '';
+}
+
 async function fetchJiraCheckInfo(jiraLink) {
   if (!JIRA_ISSUE_URL_RE.test(jiraLink)) {
     throw new Error(`Jira link must look like https://jira.synnex.com/rest/api/2/issue/<key-or-id> — got: ${jiraLink}`);
@@ -1044,24 +1063,23 @@ async function fetchJiraCheckInfo(jiraLink) {
   const description = data?.fields?.description || '';
   const descriptionFields = parseJiraDescriptionFields(description);
   const failedTestcase = descriptionFields.get('Failed Testcase') || '';
-  const failureMessage = descriptionFields.get('Failure Message') || '';
+  const failureMessage = extractJiraFullFailureMessage(description);
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
-  // comment's "body" (the Jira API's field name for that comment's text) so the parsers below can
-  // scan across all of them regardless of which comment it was pasted into.
+  // comment's "body" (the Jira API's field name for that comment's text) so
+  // parseHwdiagIoCableFaults can scan across all of them regardless of which comment it was pasted
+  // into.
   const commentsText = (data?.fields?.comment?.comments || []).map((c) => c.body || '').join('\n\n');
-  // The actual failure detail isn't always in a comment at all — a real CHECK_IOU_FRU ticket
-  // (MFGS-525635, 2026-05-23) carried the identical "Position based on base_record..." text in
-  // *both* the Description and a follow-up comment. The raw `description` string is included here
-  // (not just the field-extracted `failureMessage`) because parseJiraDescriptionFields only ever
-  // captures a single-line value per "*Label:*" — the multi-line continuation of "Failure Message"
-  // (the "Device None" / "/SYS/IOU6 ..." / "Check Result: FAIL" lines) is real Description text
-  // parseJiraDescriptionFields silently drops, so failureMessage alone would have missed it on a
-  // ticket that never repeated the same text in a comment.
-  const diagnosticText = [summary, failedTestcase, failureMessage, description, commentsText].join('\n\n');
-  const cableFaultsResult = parseHwdiagIoCableFaults(diagnosticText);
-  const iouFruResult = parseIouFruPositionFaults(diagnosticText);
-  const mentionsResult = parseGenericPartMentions(diagnosticText, iouFruResult.matchedTokens);
+  const cableFaultsResult = parseHwdiagIoCableFaults(commentsText);
+  // Deliberately scoped to *only* the Failure Message field, not summary/description/comments — a
+  // technician's comment often quotes a full "hwdiag io config"/"hwdiag io cables" session (see
+  // parseHwdiagIoCableFaults above), which lists every IOU/PCIe connector on the chassis as normal
+  // inventory, not faults. Scanning that broadly for a bare "IOU3"/"PCIE300"-style mention produced
+  // a wall of false positives for perfectly healthy parts. The Failure Message field is the one
+  // place the ticket actually states what's wrong (e.g. "only IOU6 is MISSING"), so that's the only
+  // text these two parsers should ever see.
+  const iouFruResult = parseIouFruPositionFaults(failureMessage);
+  const mentionsResult = parseGenericPartMentions(failureMessage, iouFruResult.matchedTokens);
   return {
     key: data.key || jiraLink,
     summary,
