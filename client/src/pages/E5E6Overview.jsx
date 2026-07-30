@@ -83,7 +83,8 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
     const faulted = iouFaulted(n);
     return (
       <div key={n} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted} />
+        <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted}
+          bodyStyle={{ height: '78px' }} />
         {expandedIou[n] && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }} title={`Bay IOU ${n}`}>
             <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
@@ -159,9 +160,12 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
         <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
           {/* PSUPort's own width:100% (sized for a grid cell on the B300 page) would otherwise
               stretch to fill this flex row — a fixed-width wrapper keeps each one to the "smaller
-              rectangular" size the real PS0/PS1 bays actually are. zoom:1.5 puts its height (69px)
-              at half the fan modules' zoomed height (141px), per spec. */}
-          <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
+              rectangular" size the real PS0/PS1 bays actually are. zoom stays 1.5 (keeps PSU height
+              at half the fan modules' zoomed height, per spec) — the *base* width was shrunk from
+              140px to 100px instead of touching zoom, since at 140px the row's total fixed content
+              (2 PSUs + 3 zoomed square fans + gaps) exceeded the 900px container's inner width and
+              bled off the edges once flexShrink:0 stopped it from silently compressing instead. */}
+          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
           <div style={{ display: 'flex', gap: '40px', flexShrink: 0, alignItems: 'flex-end' }}>
             {[0, 1, 2].map((n) => (
               // FanModule's own box is content-sized (narrower than tall) — style={{width}} forces
@@ -171,7 +175,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
               </div>
             ))}
           </div>
-          <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
+          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
         </div>
       )}
     </div>

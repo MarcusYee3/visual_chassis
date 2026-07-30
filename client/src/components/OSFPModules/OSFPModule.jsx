@@ -1,6 +1,9 @@
 import styles from './OSFPModule.module.css';
 
-function OSFPModule({ id, name, onClick, hasFault = false }) {
+// bodyStyle is an escape hatch for a caller that needs to override the visible .body box's own
+// intrinsic height (fixed in OSFPModule.module.css for the B300 page's dense OSFP/IOU rows)
+// without touching that shared CSS module.
+function OSFPModule({ id, name, onClick, hasFault = false, bodyStyle }) {
   const handleKeyDown = (e) => {
     if (onClick && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
@@ -21,7 +24,7 @@ function OSFPModule({ id, name, onClick, hasFault = false }) {
     >
       {hasFault && <div className={styles.badge}>!</div>}
       <div className={styles.tab} />
-      <div className={`${styles.body} ${hasFault ? styles.faulted : ''}`}>
+      <div className={`${styles.body} ${hasFault ? styles.faulted : ''}`} style={bodyStyle}>
         <div className={styles.led} />
         <span className={styles.label}>{name}</span>
       </div>
