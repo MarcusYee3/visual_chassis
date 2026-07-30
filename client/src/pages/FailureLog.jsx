@@ -69,7 +69,14 @@ function FailureLog() {
   return (
     <div style={{ ...fontStyle, padding: '20px', maxWidth: '1000px', margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-        <h2 style={{ color: '#cdd6e8', fontSize: '16px', letterSpacing: '0.04em', margin: 0 }}>PART FAILURE LOG</h2>
+        <h2 style={{ color: '#cdd6e8', fontSize: '16px', letterSpacing: '0.04em', margin: 0, display: 'flex', alignItems: 'baseline', gap: '10px' }}>
+          PART FAILURE LOG
+          {!loading && !error && (
+            <span style={{ color: '#8fa8d6', fontSize: '11px', fontWeight: 400, letterSpacing: '0.03em' }}>
+              ({entries.length} logged)
+            </span>
+          )}
+        </h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
           {selected.size > 0 && (
             <button

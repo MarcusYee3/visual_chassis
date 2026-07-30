@@ -273,7 +273,15 @@ function parseHwdiagFanInfo(output) {
     if (reducedChassis && REDUCED_CHASSIS_OPTIONAL_BAYS.has(bayId) && /^not present$/i.test(trimmedStatus)) continue;
     const n = parseInt(numStr, 10);
     if (kind === 'FM') {
-      if (!fanSeen.has(n)) { fanSeen.add(n); faults.fanIds.push(n); }
+      // On a reduced (2U) chassis, hwdiag fan info's own FM numbering is itself 0-indexed —
+      // FM0/FM1/FM2 (confirmed real hardware, SN 2630YW1027, 2026-07-23) — but the chassis UI's
+      // fan grid (FanModule in ServerOverview.jsx) is 1-indexed, Fan 1 upward. Offset by 1 here so
+      // a genuine FM0 fault highlights the UI's "Fan 1", not a nonexistent "Fan 0" that would
+      // silently fail to match any rendered fan. The full-size chassis's own hwdiag fan info
+      // output is already 1-indexed (FM1...FM21 in the real captured sample — see
+      // hwdiag_fan_info_format memory) and needs no adjustment.
+      const uiFanNum = reducedChassis ? n + 1 : n;
+      if (!fanSeen.has(uiFanNum)) { fanSeen.add(uiFanNum); faults.fanIds.push(uiFanNum); }
       addComp('gpu');
     } else {
       const id = `psu-port-${n}`;
