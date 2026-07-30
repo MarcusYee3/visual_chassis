@@ -180,7 +180,31 @@ function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '20px' }}>
-      <div style={{ alignSelf: 'stretch', display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ alignSelf: 'stretch', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* Manual override for isE5E6Chassis — it's normally set automatically from the diagnose
+            stream's terminal event (see the Model-field detection in
+            server/src/routes/diagnose.js), but a technician may want to preview/check the other
+            chassis layout before running a diagnosis at all, or override a wrong auto-detection. */}
+        <div style={{
+          display: 'flex', borderRadius: '4px', border: '1px solid #33405a', overflow: 'hidden',
+          fontFamily: "'JetBrains Mono', monospace",
+        }}>
+          {[{ key: false, label: 'B300' }, { key: true, label: 'E5-2c/E6-2c' }].map((opt) => (
+            <button
+              key={String(opt.key)}
+              onClick={() => setIsE5E6Chassis(opt.key)}
+              style={{
+                fontFamily: 'inherit', fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em',
+                textTransform: 'uppercase', padding: '6px 12px', cursor: 'pointer', border: 'none',
+                background: isE5E6Chassis === opt.key
+                  ? 'linear-gradient(180deg, #243d64 0%, #182a48 100%)' : 'transparent',
+                color: isE5E6Chassis === opt.key ? '#a8c4e8' : '#6a7a99',
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         <NavMenu />
       </div>
       {/* gap is wider than it looks like it needs to be — the chassis's U-height labels and left
