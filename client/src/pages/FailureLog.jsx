@@ -46,11 +46,6 @@ function FailureLog() {
     });
   };
 
-  const allSelected = entries.length > 0 && entries.every((e) => selected.has(e.id));
-  const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set(entries.map((e) => e.id)));
-  };
-
   const runDelete = async (ids) => {
     setDeleting(true);
     setError('');
@@ -99,9 +94,7 @@ function FailureLog() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
           <thead>
             <tr style={{ textAlign: 'left', color: '#8fa8d6', borderBottom: '1px solid #3a4a6b' }}>
-              <th style={{ padding: '6px 8px', width: '20px' }}>
-                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
-              </th>
+              <th style={{ padding: '6px 8px', width: '20px' }}></th>
               <th style={{ padding: '6px 8px' }}>Logged At</th>
               <th style={{ padding: '6px 8px' }}>Serial Number</th>
               <th style={{ padding: '6px 8px' }}>Part</th>
