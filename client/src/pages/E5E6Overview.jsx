@@ -29,6 +29,12 @@ const IOU_ROLES = {
   8: 'SSD0 / SSD1',
 };
 
+// Shared exact height for whichever view (Front/Back) is active (see the render below for why) —
+// Back's own natural height (the 3x-zoomed fan modules are taller than Front's 2 IOU rows), so
+// Front's shorter content centers within the extra space rather than shrinking Back's fans to fit
+// Front's natural height instead. Measured live (both views' natural, unconstrained heights).
+const VIEW_CONTENT_HEIGHT = 170;
+
 const pillTagStyle = {
   fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
   letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
@@ -90,7 +96,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
 
   return (
     <div style={{
-      width: '700px', display: 'flex', flexDirection: 'column', gap: '4px',
+      width: '900px', display: 'flex', flexDirection: 'column', gap: '4px',
       padding: '14px', borderRadius: '8px', border: '1px solid #2a3550',
       backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(168,196,232,0.04) 0.5px, transparent 0.5px), linear-gradient(180deg, #10141f 0%, #0b0e16 100%)',
       backgroundSize: '6px 6px, 100% 100%',
@@ -122,9 +128,14 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
         ))}
       </div>
 
-      {/* Front — 10 IOU bays, top row 6-10, bottom row 1-5 (matches the unit's own silkscreen). */}
+      {/* Both views share the same fixed height (not just a matching minHeight — an exact height,
+          with each view's own content vertically centered inside it) so toggling Front/Back never
+          visibly resizes the chassis box. Front's own natural height (2 IOU rows) is only ~80px,
+          shorter than Back's ~170px (dominated by the 3x-zoomed fan modules) — VIEW_CONTENT_HEIGHT
+          uses the taller of the two so Front centers within the extra space instead of shrinking
+          Back's fans down to fit. */}
       {view === 'front' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '6px' }}>
           {IOU_ROWS.map((row) => (
             <div key={row.join('-')} style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
               {row.map((n) => renderIou(n))}
@@ -133,32 +144,26 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
         </div>
       )}
 
-      {/* Back — 3 fans centered, PS0/PS1 at the bottom-left/bottom-right corners. minHeight keeps
-          this roughly the same overall height as the Front view (2 rows of IOU bays) so toggling
-          between the two doesn't visibly jump; justifyContent:'space-between' inside it then gives
-          the fan row and PSU row even margin to the edges instead of the fans looking small and
-          adrift in extra whitespace, matching how snugly a B300 category's own content fills its
-          section (e.g. the GPU baseboard's fan grid, gap:'3px' between rows, no loose padding). */}
+      {/* Back — PS0, the 3 fans, and PS1 all sit in one row (the fans rest between the two PSUs,
+          not stacked above them). `zoom` (not `transform: scale`) scales each module's actual
+          layout footprint along with its rendered pixels, so this row grows to fit them
+          automatically instead of needing a manually-sized wrapper the way transform would.
+          FanModule/PSUPort are shared with the B300 page (sized for its dense 6-wide grids there),
+          so the size bump is applied per-instance here rather than touching their CSS modules
+          directly. */}
       {view === 'back' && (
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '260px', padding: '10px 0' }}>
-          {/* `zoom` (not `transform: scale`) — it scales the element's actual layout footprint
-              along with its rendered pixels, so the surrounding flex row grows to fit it instead
-              of needing a manually-sized wrapper the way transform would. FanModule/PSUPort are
-              shared with the B300 page (sized for its dense 6-wide grids there), so the size bump
-              is applied per-instance here rather than touching their CSS modules directly. */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '40px' }}>
-            {[0, 1, 2].map((n) => (
-              <div key={n} style={{ zoom: 3 }}><FanModule number={n} faulted={fanFaulted(n)} /></div>
-            ))}
-          </div>
+        <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           {/* PSUPort's own width:100% (sized for a grid cell on the B300 page) would otherwise
               stretch to fill this flex row — a fixed-width wrapper keeps each one to the "smaller
               rectangular" size the real PS0/PS1 bays actually are. zoom:1.5 puts its height (69px)
               at half the fan modules' zoomed height (141px), per spec. */}
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <div style={{ width: '140px', zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
-            <div style={{ width: '140px', zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
+          <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
+          <div style={{ display: 'flex', gap: '40px', flexShrink: 0 }}>
+            {[0, 1, 2].map((n) => (
+              <div key={n} style={{ flexShrink: 0, zoom: 3 }}><FanModule number={n} faulted={fanFaulted(n)} /></div>
+            ))}
           </div>
+          <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
         </div>
       )}
     </div>
