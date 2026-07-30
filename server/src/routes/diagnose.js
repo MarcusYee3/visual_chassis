@@ -284,7 +284,16 @@ function parseHwdiagFanInfo(output) {
       if (!fanSeen.has(uiFanNum)) { fanSeen.add(uiFanNum); faults.fanIds.push(uiFanNum); }
       addComp('gpu');
     } else {
-      const id = `psu-port-${n}`;
+      // Same 0- vs 1-indexed split as the FM branch above: a reduced (2U) chassis's own hwdiag fan
+      // info PS numbering is 0-indexed (PS0/PS1 — same real hardware sample), while the full-size
+      // chassis's is already 1-indexed (PS1... in the captured sample). The shared psu-port-<n> id
+      // space (used by both the 12-PSU B300 grid and, elsewhere, a 2U chassis's own PS0/PS1
+      // display) is always 1-indexed, matching parseIlomProblems/parseHwdiagTempGetAll's own
+      // /SYS/PS<n> (0-indexed) + 1 convention — this branch was the one place still emitting the
+      // raw, un-offset number for a reduced chassis, which meant a fault reported only via this
+      // command (not Open_Problems/fmadm) never matched any real psu-port-<n> id.
+      const uiPsuNum = reducedChassis ? n + 1 : n;
+      const id = `psu-port-${uiPsuNum}`;
       if (!psuSeen.has(id)) { psuSeen.add(id); faults.psuPorts.push(id); }
       addComp('psu');
     }
@@ -1072,6 +1081,10 @@ async function fetchJiraCheckInfo(jiraLink) {
   const descriptionFields = parseJiraDescriptionFields(description);
   const failedTestcase = descriptionFields.get('Failed Testcase') || '';
   const failureMessage = extractJiraFullFailureMessage(description);
+  // Same "*Label:* value" field the ticket carries "Failed Testcase"/"Failure Message" in — used
+  // by describeJiraFlow below to route E5-2c/E6-2c units to their own chassis layout page instead
+  // of the default B300 visualizer.
+  const model = descriptionFields.get('Model') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
   // comment's "body" (the Jira API's field name for that comment's text) so
@@ -1093,6 +1106,7 @@ async function fetchJiraCheckInfo(jiraLink) {
     summary,
     failedTestcase,
     failureMessage,
+    model,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
@@ -1113,6 +1127,14 @@ async function fetchJiraCheckInfo(jiraLink) {
   };
 }
 
+// E5-2c/E6-2c units (real Jira Model values seen: "E5-2C.DENSE", "E6-2c", "ORACLE SERVER E6-2c")
+// route to a different chassis-layout page client-side (client/src/pages/E5E6Overview.jsx) instead
+// of the default B300 visualizer — this chassis is physically a 10-IOU/3-fan/2-PSU 2U unit, not
+// the B300's GBB/GPU-baseboard/IOB/PSU layout. The B300/JBOG chassis's own model string (e.g.
+// "X11-2C.B300H") never contains the literal substring "E5-2C"/"E6-2C" at all, so this can't
+// false-match it regardless of the trailing \b.
+const E5_E6_MODEL_RE = /E[56]-2C\b/i;
+
 // Returns null if no jiraLink was given, or if fetching/parsing it failed for any reason — in
 // both cases the caller falls through to the normal mfg-collector-cache-based describeDefaultFlow
 // below, same as if this feature didn't exist. Otherwise returns the same {notice, sourceTag,
@@ -1120,7 +1142,10 @@ async function fetchJiraCheckInfo(jiraLink) {
 // resolvedRaw pair — see below), so both GET /precheck and the main GET / handler can treat a
 // Jira-derived decision identically to a mfg-collector one, just sourced from a higher-priority
 // place (a specific repair ticket rather than the live JBOG test table, which only ever covers
-// the small subset of units currently mid-manufacturing-test).
+// the small subset of units currently mid-manufacturing-test). Every branch also carries
+// chassisModel/isE5E6Chassis (see E5_E6_MODEL_RE above) since any of them can be the one that
+// actually reaches the client — the main GET / handler below surfaces these on {type:'done'} so
+// App.jsx knows which page component to render regardless of which branch decided the flow.
 async function describeJiraFlow(jiraLink) {
   if (!jiraLink) return null;
   let info;
@@ -1130,6 +1155,8 @@ async function describeJiraFlow(jiraLink) {
     console.warn('[diagnose] Jira link fetch/parse failed, falling back to mfg-collector:', err.message);
     return null;
   }
+  const chassisModel = info.model || null;
+  const isE5E6Chassis = E5_E6_MODEL_RE.test(info.model || '');
 
   // A technician's pasted diag-shell session already contains the actual fault (e.g. the swapped
   // cable Cable#13/#14 mismatch) — that's a completed diagnosis, not a hint to go run more checks,
@@ -1143,6 +1170,7 @@ async function describeJiraFlow(jiraLink) {
       targetedCheckName: null,
       resolvedFaults: info.cableFaults,
       resolvedRaw: info.commentsText,
+      chassisModel, isE5E6Chassis,
     };
   }
 
@@ -1152,12 +1180,12 @@ async function describeJiraFlow(jiraLink) {
   // description's Failed Testcase/Failure Message fields, and the comments directly so none of
   // those shapes get missed.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON' };
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName };
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -1166,12 +1194,14 @@ async function describeJiraFlow(jiraLink) {
         `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
       sourceTag: 'jira-no-targeted-flow',
       targetedCheckName: null,
+      chassisModel, isE5E6Chassis,
     };
   }
   return {
     notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
     sourceTag: 'jira-no-check-code',
     targetedCheckName: null,
+    chassisModel, isE5E6Chassis,
   };
 }
 
@@ -1379,10 +1409,15 @@ router.get('/', async (req, res) => {
     let {
       notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
+    // Only ever set by describeJiraFlow (describeDefaultFlow has no Model field to read, since
+    // mfg-collector's JBOG table doesn't carry one) — defaults keep every sendDone below well-typed
+    // regardless of which flow decided the request. See E5_E6_MODEL_RE above.
+    const chassisModel = jiraFlow?.chassisModel ?? null;
+    const isE5E6Chassis = jiraFlow?.isE5E6Chassis ?? false;
     if (resolvedFaults) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — fault(s) already documented in the ticket's comments, using them directly instead of opening an ILOM session`);
       sendPartial(defaultFlowSourceTag, resolvedFaults, resolvedRaw);
-      sendDone({ source: defaultFlowSourceTag });
+      sendDone({ source: defaultFlowSourceTag, chassisModel, isE5E6Chassis });
       return res.end();
     }
     // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
@@ -1600,6 +1635,7 @@ router.get('/', async (req, res) => {
       // and be surfaced separately so the frontend can show it as a neutral status line instead.
       ...(defaultFlowNotice ? { defaultFlowNotice } : {}),
       ...(defaultFlowSourceTag ? { source: `default-ilom-chain (${defaultFlowSourceTag})` } : {}),
+      chassisModel, isE5E6Chassis,
     });
     res.end();
   } catch (err) {

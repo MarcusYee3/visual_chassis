@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
+import E5E6Overview from './pages/E5E6Overview';
 import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
 import NavMenu from './components/NavMenu/NavMenu';
 import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
@@ -60,6 +61,11 @@ function App() {
   const [flowNotice, setFlowNotice] = useState('');
   const [loadingNotice, setLoadingNotice] = useState('');
   const [logPanel, setLogPanel] = useState(null); // { serialNumber, parts, checkName, source }
+  // Set from the diagnose stream's terminal event (see server/src/routes/diagnose.js's
+  // E5_E6_MODEL_RE) — an E5-2c/E6-2c unit's Jira "Model" field routes it to a different chassis
+  // layout page below instead of the default B300 visualizer.
+  const [chassisModel, setChassisModel] = useState(null);
+  const [isE5E6Chassis, setIsE5E6Chassis] = useState(false);
 
   const handleFormSubmit = async (formData) => {
     await updateServer('server-1', { serialNumber: formData.sn });
@@ -72,6 +78,8 @@ function App() {
     setDiagnoseStatus('');
     setFlowNotice('');
     setLoadingNotice('');
+    setChassisModel(null);
+    setIsE5E6Chassis(false);
 
     // The real diagnose request takes tens of seconds (ILOM SSH round-trips); precheck is a
     // near-instant read of the same decision it's about to make (mfg-collector cache, or the
@@ -142,6 +150,10 @@ function App() {
       // here since diagnoseError above already covers it.
       if (terminalEvent && terminalEvent.type !== 'fatal') {
         setFlowNotice(terminalEvent.defaultFlowNotice || (terminalEvent.type === 'confirm' ? terminalEvent.message : ''));
+        // Only ever set on a real {type:'done'} (a declined confirm never reaches one, so these
+        // just stay at their reset defaults — the B300 page — in that case).
+        setChassisModel(terminalEvent.chassisModel || null);
+        setIsE5E6Chassis(!!terminalEvent.isE5E6Chassis);
         const hasFaults = accumulated.components.length > 0 || (accumulated.genericErrors || []).length > 0;
         // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
         // short-circuit (a matched targeted check, a forced check, or faults already documented in
@@ -187,7 +199,9 @@ function App() {
             </div>
           )}
         </div>
-        <ServerOverview refreshKey={refreshKey} faults={faults} />
+        {isE5E6Chassis
+          ? <E5E6Overview refreshKey={refreshKey} faults={faults} chassisModel={chassisModel} />
+          : <ServerOverview refreshKey={refreshKey} faults={faults} />}
       </div>
       {/* genericErrors, diagnoseError, and LogFailurePanel all get their own full-width row below
           the sidebar (rather than squeezed into the 300px sidebar column, or — for genericErrors —
