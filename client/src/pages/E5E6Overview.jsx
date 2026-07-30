@@ -152,15 +152,23 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
           so the size bump is applied per-instance here rather than touching their CSS modules
           directly. */}
       {view === 'back' && (
-        <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        // alignItems:'flex-end' (not 'center') so the fans and PS0/PS1 sit flush along a shared
+        // bottom edge instead of each centering independently — since this row already fills the
+        // full VIEW_CONTENT_HEIGHT, that bottom edge is also the container's own bottom, which is
+        // what puts the whole row near the bottom of the chassis box rather than mid-height.
+        <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
           {/* PSUPort's own width:100% (sized for a grid cell on the B300 page) would otherwise
               stretch to fill this flex row — a fixed-width wrapper keeps each one to the "smaller
               rectangular" size the real PS0/PS1 bays actually are. zoom:1.5 puts its height (69px)
               at half the fan modules' zoomed height (141px), per spec. */}
           <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
-          <div style={{ display: 'flex', gap: '40px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: '40px', flexShrink: 0, alignItems: 'flex-end' }}>
             {[0, 1, 2].map((n) => (
-              <div key={n} style={{ flexShrink: 0, zoom: 3 }}><FanModule number={n} faulted={fanFaulted(n)} /></div>
+              // FanModule's own box is content-sized (narrower than tall) — style={{width}} forces
+              // it square (to its own natural height) before zoom scales the whole thing up 3x.
+              <div key={n} style={{ flexShrink: 0, zoom: 3 }}>
+                <FanModule number={n} faulted={fanFaulted(n)} style={{ width: '47px' }} />
+              </div>
             ))}
           </div>
           <div style={{ width: '140px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
