@@ -38,3 +38,13 @@ export function logFailure({ serialNumber, partId, partLabel, checkName, source,
 export function getAllFailures() {
   return db.prepare('SELECT * FROM part_failures ORDER BY logged_at DESC').all();
 }
+
+// Bulk by design (a single id is just a one-element array) so the client's "select multiple, then
+// delete" flow and a lone row's own delete button can share one code path. Returns the number of
+// rows actually removed, so the caller can tell a stale/already-deleted id apart from a real delete.
+export function deleteFailures(ids) {
+  if (!ids || ids.length === 0) return 0;
+  const placeholders = ids.map(() => '?').join(',');
+  const info = db.prepare(`DELETE FROM part_failures WHERE id IN (${placeholders})`).run(...ids);
+  return info.changes;
+}

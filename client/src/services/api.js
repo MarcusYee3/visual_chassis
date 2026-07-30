@@ -139,6 +139,15 @@ export const getAllPartFailures = async () => {
   return handleResponse(response, 'Failed to fetch part failure log');
 };
 
+export const deletePartFailures = async (ids) => {
+  const response = await fetch(`${API_BASE}/part-failures`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  return handleResponse(response, 'Failed to delete part failure(s)');
+};
+
 export const updatePCIePort = async (serverId, osfpId, pcieId, status) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}/pcie/${pcieId}`, {
     method: 'PUT',
