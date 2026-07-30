@@ -7,20 +7,9 @@ import PSUPort from '../components/PSUPorts/PSUPort';
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 // Same palette/fault convention as ServerOverview.jsx (never red for a category — red is fault-only).
-const SECTION_COLORS = {
-  blue: { background: 'linear-gradient(180deg, #243d64 0%, #182a48 100%)', border: '#3a5a8f', color: '#a8c4e8' },
-  green: { background: 'linear-gradient(180deg, #1e4a38 0%, #143528 100%)', border: '#3a7a5a', color: '#a8dcc0' },
-};
-const sectionHeaderStyle = (colorKey) => {
-  const c = SECTION_COLORS[colorKey];
-  return {
-    padding: '5px 10px', marginBottom: '8px',
-    fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
-    letterSpacing: '0.08em', textTransform: 'uppercase', color: c.color,
-    display: 'inline-flex', alignItems: 'center', gap: '6px',
-    background: c.background, border: `1px solid ${c.border}`, borderRadius: '3px',
-    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
-  };
+const VIEW_COLORS = {
+  front: { background: 'linear-gradient(180deg, #243d64 0%, #182a48 100%)', border: '#3a5a8f', color: '#a8c4e8' },
+  back: { background: 'linear-gradient(180deg, #1e4a38 0%, #143528 100%)', border: '#3a7a5a', color: '#a8dcc0' },
 };
 
 // Front panel: 10 IOU bays in two rows, matching the unit's own silkscreen layout — top row reads
@@ -30,14 +19,14 @@ const IOU_ROWS = [
   [1, 2, 3, 4, 5],
 ];
 
-// Fixed-function bays; every other IOU is a plain general-purpose slot (its reveal just echoes its
-// own number, same as an OSFP module with nothing special behind it). IOU8 hosts two independent
-// SSDs rather than one single alias, hence the array.
+// Fixed-function bays; every other IOU is a plain general-purpose slot (its own label just stays
+// "IOU {n}", same as an OSFP module with nothing special behind it). IOU8 hosts two independent
+// SSDs, hence the combined label.
 const IOU_ROLES = {
-  1: ['ROT/FIM'],
-  3: ['NIC'],
-  6: ['Ortano Card'],
-  8: ['SSD0', 'SSD1'],
+  1: 'ROT/FIM',
+  3: 'NIC',
+  6: 'Ortano Card',
+  8: 'SSD0 / SSD1',
 };
 
 const pillTagStyle = {
@@ -49,8 +38,14 @@ const pillTagStyle = {
 
 function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
-  // Keyed by IOU number (1-10) — toggles that bay's own role/alias reveal, same click-to-expand
-  // convention as ServerOverview.jsx's OSFP modules.
+  // 'front' or 'back' — only one face is ever shown at once, toggled the same way the B300/E5-2c
+  // page switch itself works (see App.jsx), rather than stacking both faces on top of each other.
+  const [view, setView] = useState('front');
+  // Keyed by IOU number (1-10) — toggles that bay's own IOU-number reveal, same click-to-expand
+  // convention as ServerOverview.jsx's OSFP modules (there, the always-visible label is the
+  // generic "OSFP {slot}" and clicking reveals the specific "IOU {n}" it's wired to; here it's
+  // inverted — the always-visible label is the bay's specific role/alias when it has one, and
+  // clicking reveals the generic "IOU {n}" bay number underneath it).
   const [expandedIou, setExpandedIou] = useState({});
 
   const toggleIou = (n) => setExpandedIou((prev) => ({ ...prev, [n]: !prev[n] }));
@@ -80,19 +75,13 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
 
   const renderIou = (n) => {
     const faulted = iouFaulted(n);
-    const aliases = IOU_ROLES[n] || [`IOU ${n}`];
     return (
       <div key={n} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <OSFPModule id={`iou-${n}`} name={`IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted} />
+        <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted} />
         {expandedIou[n] && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            {aliases.map((alias) => (
-              <div key={alias} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                title={`IOU ${n} <-> ${alias}`}>
-                <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
-                <div style={pillTagStyle}>{alias}</div>
-              </div>
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }} title={`Bay IOU ${n}`}>
+            <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
+            <div style={pillTagStyle}>IOU {n}</div>
           </div>
         )}
       </div>
@@ -112,12 +101,29 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
         letterSpacing: '0.05em', color: '#cdd6e8', textAlign: 'center',
         padding: '4px 0 10px', borderBottom: '1px solid #232a3d', marginBottom: '4px',
       }}>
-        {server.name} — SN: {server.serialNumber}{chassisModel ? ` (${chassisModel})` : ''}
+        {chassisModel || 'E5-2c/E6-2c'} — SN: {server.serialNumber}
+      </div>
+
+      <div style={{ display: 'flex', borderRadius: '4px', border: '1px solid #33405a', overflow: 'hidden', width: 'fit-content', marginBottom: '8px' }}>
+        {[{ key: 'front', label: 'Front' }, { key: 'back', label: 'Back' }].map((opt) => (
+          <button
+            key={opt.key}
+            onClick={() => setView(opt.key)}
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
+              letterSpacing: '0.08em', textTransform: 'uppercase', padding: '5px 14px',
+              cursor: 'pointer', border: 'none',
+              background: view === opt.key ? VIEW_COLORS[opt.key].background : 'transparent',
+              color: view === opt.key ? VIEW_COLORS[opt.key].color : '#6a7a99',
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
       {/* Front — 10 IOU bays, top row 6-10, bottom row 1-5 (matches the unit's own silkscreen). */}
-      <div>
-        <div style={sectionHeaderStyle('blue')}>Front</div>
+      {view === 'front' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {IOU_ROWS.map((row) => (
             <div key={row.join('-')} style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
@@ -125,15 +131,16 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
             </div>
           ))}
         </div>
-      </div>
+      )}
 
-      {/* Back — 3 fans centered, PS0/PS1 at the bottom-left/bottom-right corners. */}
-      <div style={{ marginTop: '10px' }}>
-        <div style={sectionHeaderStyle('green')}>Back</div>
-        <div style={{
-          display: 'flex', flexDirection: 'column', gap: '16px', padding: '12px 10px',
-          borderRadius: '4px', border: '1px solid #232a3d', background: 'rgba(30,74,56,0.08)',
-        }}>
+      {/* Back — 3 fans centered, PS0/PS1 at the bottom-left/bottom-right corners. minHeight keeps
+          this roughly the same overall height as the Front view (2 rows of IOU bays) so toggling
+          between the two doesn't visibly jump; justifyContent:'space-between' inside it then gives
+          the fan row and PSU row even margin to the edges instead of the fans looking small and
+          adrift in extra whitespace, matching how snugly a B300 category's own content fills its
+          section (e.g. the GPU baseboard's fan grid, gap:'3px' between rows, no loose padding). */}
+      {view === 'back' && (
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '92px', padding: '4px 0' }}>
           <div style={{ display: 'flex', justifyContent: 'center', gap: '14px' }}>
             {[0, 1, 2].map((n) => (
               <FanModule key={n} number={n} faulted={fanFaulted(n)} />
@@ -147,7 +154,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
             <div style={{ width: '140px' }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
