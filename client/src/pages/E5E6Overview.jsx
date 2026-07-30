@@ -90,7 +90,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
 
   return (
     <div style={{
-      width: '520px', display: 'flex', flexDirection: 'column', gap: '4px',
+      width: '700px', display: 'flex', flexDirection: 'column', gap: '4px',
       padding: '14px', borderRadius: '8px', border: '1px solid #2a3550',
       backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(168,196,232,0.04) 0.5px, transparent 0.5px), linear-gradient(180deg, #10141f 0%, #0b0e16 100%)',
       backgroundSize: '6px 6px, 100% 100%',
@@ -140,18 +140,24 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
           adrift in extra whitespace, matching how snugly a B300 category's own content fills its
           section (e.g. the GPU baseboard's fan grid, gap:'3px' between rows, no loose padding). */}
       {view === 'back' && (
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '92px', padding: '4px 0' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '14px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '260px', padding: '10px 0' }}>
+          {/* `zoom` (not `transform: scale`) — it scales the element's actual layout footprint
+              along with its rendered pixels, so the surrounding flex row grows to fit it instead
+              of needing a manually-sized wrapper the way transform would. FanModule/PSUPort are
+              shared with the B300 page (sized for its dense 6-wide grids there), so the size bump
+              is applied per-instance here rather than touching their CSS modules directly. */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '40px' }}>
             {[0, 1, 2].map((n) => (
-              <FanModule key={n} number={n} faulted={fanFaulted(n)} />
+              <div key={n} style={{ zoom: 3 }}><FanModule number={n} faulted={fanFaulted(n)} /></div>
             ))}
           </div>
           {/* PSUPort's own width:100% (sized for a grid cell on the B300 page) would otherwise
               stretch to fill this flex row — a fixed-width wrapper keeps each one to the "smaller
-              rectangular" size the real PS0/PS1 bays actually are. */}
+              rectangular" size the real PS0/PS1 bays actually are. zoom:1.5 puts its height (69px)
+              at half the fan modules' zoomed height (141px), per spec. */}
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <div style={{ width: '140px' }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
-            <div style={{ width: '140px' }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
+            <div style={{ width: '140px', zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
+            <div style={{ width: '140px', zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
           </div>
         </div>
       )}
