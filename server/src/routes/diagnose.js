@@ -675,6 +675,16 @@ async function runPowerOnCheck(serialNumber, options = {}) {
     { line: 'exit', delayAfterMs: 1500 },
   ], ilomIp, ilomUser, ilomPassword, 20000);
   console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
+  // "show /SYS" -> Properties also prints "product_name = ORACLE SERVER E6-2c" (confirmed real
+  // hardware, SN 2631YW103X, 2026-07-29) — this is the live, always-available signal for routing
+  // to the E5-2c/E6-2c chassis page, unlike the Jira "Model" field (E5_E6_MODEL_RE further below),
+  // which only exists when a technician supplies a Jira link *and* that ticket happens to carry a
+  // Model field. Every diagnose reaches this /SYS read via CHECK_POWER_ON (either matched directly
+  // or swept unconditionally in the default chain's Step 3), so this is the primary detection path
+  // — chassisModel/isE5E6Chassis are attached to every return below where sysOut is available.
+  const productNameMatch = sysOut.match(/product_name\s*=\s*(.+)/i);
+  const chassisModel = productNameMatch ? productNameMatch[1].trim() : null;
+  const isE5E6Chassis = chassisModel ? E5_E6_MODEL_RE.test(chassisModel) : false;
   const powerStateMatch = sysOut.match(/power_state\s*=\s*(\S+)/i);
   if (powerStateMatch && !/^on$/i.test(powerStateMatch[1])) {
     if (!options.bypassPowerState) {
@@ -682,6 +692,7 @@ async function runPowerOnCheck(serialNumber, options = {}) {
         faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
         raw: `${eveOut}\n${sysOut}`,
         gateParam: 'bypassPowerState',
+        chassisModel, isE5E6Chassis,
       };
     }
     console.log(`[diagnose] POWER_ON check: /SYS power_state is "${powerStateMatch[1]}" but bypassPowerState was requested — running the power-rail check anyway`);
@@ -698,7 +709,7 @@ async function runPowerOnCheck(serialNumber, options = {}) {
 
   const result = parseHwdiagPowerFaults(powerOut);
   console.log('[diagnose] POWER_ON check parsed faults:', JSON.stringify(result.faults));
-  return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}` };
+  return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}`, chassisModel, isE5E6Chassis };
 }
 
 // Targeted flow for an UPDATE_HOSTNIC_FW_REMOTE-class failure — that check needs the host's own
@@ -1377,8 +1388,11 @@ router.get('/', async (req, res) => {
         return res.end();
       }
       console.log(`[diagnose] forceCheck=${forceCheck} set, running its targeted check directly for ${serialNumber}, bypassing mfg-collector entirely`);
-      await runAndReportCheck(forceCheck, targetedCheck);
-      sendDone({ source: `forced -> ${forceCheck}` });
+      const forcedResult = await runAndReportCheck(forceCheck, targetedCheck);
+      sendDone({
+        source: `forced -> ${forceCheck}`,
+        ...(forcedResult.chassisModel ? { chassisModel: forcedResult.chassisModel, isE5E6Chassis: forcedResult.isE5E6Chassis } : {}),
+      });
       return res.end();
     }
 
@@ -1409,11 +1423,22 @@ router.get('/', async (req, res) => {
     let {
       notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
-    // Only ever set by describeJiraFlow (describeDefaultFlow has no Model field to read, since
-    // mfg-collector's JBOG table doesn't carry one) — defaults keep every sendDone below well-typed
-    // regardless of which flow decided the request. See E5_E6_MODEL_RE above.
-    const chassisModel = jiraFlow?.chassisModel ?? null;
-    const isE5E6Chassis = jiraFlow?.isE5E6Chassis ?? false;
+    // Seeded from describeJiraFlow (describeDefaultFlow has no Model field to read, since
+    // mfg-collector's JBOG table doesn't carry one) but reassigned below (`let`, not `const`)
+    // whenever CHECK_POWER_ON actually runs and reads the live "show /SYS" product_name — that's
+    // the primary, always-available detection path (works with no Jira link at all); the Jira
+    // Model field is only a fallback for a request that never reaches CHECK_POWER_ON. See
+    // E5_E6_MODEL_RE and runPowerOnCheck's own product_name parsing above.
+    let chassisModel = jiraFlow?.chassisModel ?? null;
+    let isE5E6Chassis = jiraFlow?.isE5E6Chassis ?? false;
+    // Applied after every targeted-check call below — a check that doesn't set chassisModel
+    // (everything except CHECK_POWER_ON) leaves the current value untouched.
+    const adoptLiveChassisModel = (result) => {
+      if (result?.chassisModel) {
+        chassisModel = result.chassisModel;
+        isE5E6Chassis = result.isE5E6Chassis;
+      }
+    };
     if (resolvedFaults) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — fault(s) already documented in the ticket's comments, using them directly instead of opening an ILOM session`);
       sendPartial(defaultFlowSourceTag, resolvedFaults, resolvedRaw);
@@ -1429,6 +1454,7 @@ router.get('/', async (req, res) => {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const targetedResult = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
       const targetedFaults = targetedResult.faults;
+      adoptLiveChassisModel(targetedResult);
 
       // The check stopped at a bypassable gate (runPowerOnCheck's own power_state/HOSTNIC checks —
       // see gateParam) without that bypass already being active. Ask specifically whether to keep
@@ -1626,7 +1652,8 @@ router.get('/', async (req, res) => {
 
     for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
       console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
-      await runAndReportCheck(checkName, targetedCheck);
+      const stepResult = await runAndReportCheck(checkName, targetedCheck);
+      adoptLiveChassisModel(stepResult);
     }
 
     sendDone({
