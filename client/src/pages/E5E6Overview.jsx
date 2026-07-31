@@ -172,7 +172,10 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
       {view === 'front' && (
         <div style={{ height: VIEW_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '6px' }}>
           {IOU_ROWS.map((row) => (
-            <div key={row.join('-')} style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
+            // Column 3 (IOU8 in the top row, IOU3 in the bottom row — both rows share this same
+            // template, which is what keeps them aligned as one narrower column down the page) is
+            // narrower than the rest; the freed width is redistributed evenly across the other 4.
+            <div key={row.join('-')} style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.05fr 0.8fr 1.05fr 1.05fr', gap: '6px' }}>
               {row.map((n) => renderIou(n))}
             </div>
           ))}
