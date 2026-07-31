@@ -1319,6 +1319,12 @@ router.get('/', async (req, res) => {
   // chunked response rather than SSE/WebSocket: same-origin, one-directional, and this keeps
   // client-side parsing to "split on \n, JSON.parse each line" with no extra protocol.
   //   {type:'partial', label, faults, raw}   — merge `faults` into the running total immediately
+  //   {type:'chassis', chassisModel, isE5E6Chassis} — sent the *instant* the chassis type becomes
+  //                                            known, ahead of any partial that might follow — lets
+  //                                            the client switch chassis pages before it renders a
+  //                                            single fault, rather than rendering every partial on
+  //                                            the wrong (default) page until the terminal event
+  //                                            finally reveals the real chassis type
   //   {type:'fatal', error}                  — unrecoverable (e.g. ILOM down); stream ends after this
   //   {type:'confirm', message, resumeParam} — stream ends after this; ask the user whether to
   //                                            continue, and if so re-request with every previous
@@ -1330,6 +1336,7 @@ router.get('/', async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson');
   res.setHeader('Cache-Control', 'no-cache');
   const sendPartial = (label, faults, raw) => res.write(`${JSON.stringify({ type: 'partial', label, faults, raw })}\n`);
+  const sendChassisInfo = (chassisModel, isE5E6Chassis) => res.write(`${JSON.stringify({ type: 'chassis', chassisModel, isE5E6Chassis })}\n`);
   const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
   const sendConfirm = (message, resumeParam) => res.write(`${JSON.stringify({ type: 'confirm', message, resumeParam })}\n`);
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
@@ -1431,12 +1438,19 @@ router.get('/', async (req, res) => {
     // E5_E6_MODEL_RE and runPowerOnCheck's own product_name parsing above.
     let chassisModel = jiraFlow?.chassisModel ?? null;
     let isE5E6Chassis = jiraFlow?.isE5E6Chassis ?? false;
+    // Sent the instant the chassis type is (re)confirmed — a Jira Model field known before any
+    // ILOM session even opens, or a later live "show /SYS" reading — so the client can switch
+    // pages before a single fault partial renders on the wrong one. Guarded so an unchanged value
+    // (e.g. Jira already said E6-2c and the live read just confirms it) doesn't resend needlessly.
+    if (chassisModel) sendChassisInfo(chassisModel, isE5E6Chassis);
     // Applied after every targeted-check call below — a check that doesn't set chassisModel
-    // (everything except CHECK_POWER_ON) leaves the current value untouched.
+    // (everything except CHECK_POWER_ON) leaves the current value untouched. Only announces when
+    // the value actually changes, per the guard above.
     const adoptLiveChassisModel = (result) => {
-      if (result?.chassisModel) {
+      if (result?.chassisModel && result.chassisModel !== chassisModel) {
         chassisModel = result.chassisModel;
         isE5E6Chassis = result.isE5E6Chassis;
+        sendChassisInfo(chassisModel, isE5E6Chassis);
       }
     };
     if (resolvedFaults) {
@@ -1520,6 +1534,31 @@ router.get('/', async (req, res) => {
     }
     const ilomIp = ilomIpParam || eveIlomIp;
     console.log('[diagnose] ILOM IP:', ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
+
+    // Step 1.5: identify the chassis type before any fault data streams to the client — run as
+    // its own dedicated session (not combined into Step 2's Open_Problems session below) so its
+    // output never shares a parsing buffer with anything parseIlomProblems scans. A shared buffer
+    // once caused parseIlomProblems to false-positive on every PSU in an unrelated temp dump (see
+    // diagnose_parser_isolation memory) — "show /SYS"'s own Targets listing carries enough bare
+    // component names (IOU3, IOU6, ...) that feeding it into that same scan risked the same class
+    // of bug. Kept deliberately minimal (just this one read) and non-fatal: a failure here just
+    // means the chassis type stays whatever Jira already said (or unknown), it doesn't abort the
+    // rest of the chain.
+    try {
+      const identOut = await runIlomSession([
+        { line: 'show /SYS', delayAfterMs: 3000 },
+        { line: 'exit', delayAfterMs: 1500 },
+      ], ilomIp, process.env.ILOM_USER || 'root', process.env.ILOM_PASSWORD || 'changeme', 20000);
+      const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
+      if (productNameMatch) {
+        adoptLiveChassisModel({
+          chassisModel: productNameMatch[1].trim(),
+          isE5E6Chassis: E5_E6_MODEL_RE.test(productNameMatch[1].trim()),
+        });
+      }
+    } catch (err) {
+      console.error('[diagnose] chassis identification (show /SYS) failed for', serialNumber, ':', err.message);
+    }
 
     // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
     // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang

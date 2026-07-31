@@ -118,6 +118,13 @@ function App() {
           accumulated = mergeFaultsClient(accumulated, event.faults);
           setFaults(accumulated);
           setLoadingNotice(`Checking ${event.label}…`);
+        } else if (event.type === 'chassis') {
+          // Not a terminal event — the stream keeps going after this. Applied the instant it
+          // arrives (server sends it before any partial whenever possible) so the page switches to
+          // E5E6Overview before a single fault renders on the wrong (default B300) page instead of
+          // only at the very end, once the terminal event finally reveals the chassis type.
+          setChassisModel(event.chassisModel || null);
+          setIsE5E6Chassis(!!event.isE5E6Chassis);
         } else {
           if (event.type === 'fatal') setDiagnoseError(event.error);
           terminalEvent = event;
