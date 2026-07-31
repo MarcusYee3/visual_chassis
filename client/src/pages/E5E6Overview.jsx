@@ -84,7 +84,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
     return (
       <div key={n} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
         <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted}
-          bodyStyle={{ height: '78px' }} />
+          bodyStyle={{ height: '78px' }} labelStyle={{ fontSize: '11px' }} />
         {expandedIou[n] && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }} title={`Bay IOU ${n}`}>
             <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
