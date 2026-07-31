@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useServerData } from '../hooks/useServerData';
 import OSFPModule from '../components/OSFPModules/OSFPModule';
 import FanModule from '../components/FanModule/FanModule';
 import PSUPort from '../components/PSUPorts/PSUPort';
+import DimmModule from '../components/DimmModule/DimmModule';
 
 const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
@@ -35,6 +36,14 @@ const IOU_ROLES = {
 // Front's natural height instead. Measured live (both views' natural, unconstrained heights).
 const VIEW_CONTENT_HEIGHT = 170;
 
+// This chassis carries 12 DIMM slots per CPU (0-11), not the B300's 16 (0-15) — same
+// "Motherboard is an external head-node unit, not a rack slot" convention as ServerOverview.jsx,
+// just with this platform's own slot count.
+const DIMM_SLOTS = Array.from({ length: 12 }, (_, i) => i);
+
+const faultBorder = '1px solid #ff4444';
+const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
+
 const pillTagStyle = {
   fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
   letterSpacing: '0.04em', color: '#a8bad6', background: '#1a1e28',
@@ -53,8 +62,24 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
   // inverted — the always-visible label is the bay's specific role/alias when it has one, and
   // clicking reveals the generic "IOU {n}" bay number underneath it).
   const [expandedIou, setExpandedIou] = useState({});
+  // Motherboard is its own collapsed-by-default external panel, same as ServerOverview.jsx's —
+  // it's cabled in from the head node, not one of this chassis's own Front/Back bays.
+  const [expandedMb, setExpandedMb] = useState(false);
+  const prevFaults = useRef(EMPTY_FAULTS);
 
   const toggleIou = (n) => setExpandedIou((prev) => ({ ...prev, [n]: !prev[n] }));
+  const handleMbClick = () => setExpandedMb((prev) => !prev);
+
+  const mbFaulted = (faults.components || []).includes('mb') || (faults.dimmIds || []).length > 0;
+
+  // Auto-expand the moment a DIMM/motherboard fault first arrives, same as ServerOverview.jsx.
+  useEffect(() => {
+    const prev = prevFaults.current;
+    const justFaulted = mbFaulted
+      && !(prev.components || []).includes('mb') && !(prev.dimmIds || []).length;
+    if (justFaulted) setExpandedMb(true);
+    prevFaults.current = faults;
+  }, [faults, mbFaulted]);
 
   if (loading) return (
     <div style={{ textAlign: 'center', padding: '80px 20px', color: '#999' }}>
@@ -79,6 +104,14 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
   const fanFaulted = (displayNum) => (faults.fanIds || []).includes(displayNum + 1);
   const psuFaulted = (displayNum) => (faults.psuPorts || []).includes(`psu-port-${displayNum + 1}`);
 
+  const mbCableColor = mbFaulted ? '#ff4444' : '#c08a3a';
+  const mbPlugStyle = {
+    width: '5px', height: '12px', borderRadius: '1px', flexShrink: 0,
+    background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
+    border: `1px solid ${mbCableColor}`,
+    boxShadow: mbFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
+  };
+
   const renderIou = (n) => {
     const faulted = iouFaulted(n);
     return (
@@ -96,6 +129,7 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
   };
 
   return (
+    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start' }}>
     <div style={{
       width: '900px', display: 'flex', flexDirection: 'column', gap: '4px',
       padding: '14px', borderRadius: '8px', border: '1px solid #2a3550',
@@ -178,6 +212,70 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
           <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
         </div>
       )}
+    </div>
+
+      {/* Motherboard — external head-node unit cabled in, not one of this chassis's own Front/Back
+          bays, same convention as ServerOverview.jsx's own Motherboard panel. marginTop is a fixed
+          value (not view-dependent) since the outer chassis card's own height doesn't change
+          between Front/Back — tuned so the cable points at the chassis card's vertical center in
+          both collapsed and expanded states. */}
+      <div style={{ display: 'flex', alignItems: 'center', marginTop: expandedMb ? '-43px' : '120px', flexShrink: 0 }}
+        title={`Head node motherboard — linked via cable${mbFaulted ? ' — FAULT' : ''}`}>
+        <div style={{ display: 'flex', alignItems: 'center', width: '46px', flexShrink: 0 }}>
+          <div style={mbPlugStyle} />
+          <div style={{
+            flex: 1, height: 0,
+            borderTop: `2px dotted ${mbCableColor}`,
+            filter: mbFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+          }} />
+          <div style={mbPlugStyle} />
+        </div>
+        <div
+          onClick={handleMbClick} role="button" tabIndex={0}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleMbClick()}
+          style={{
+            width: expandedMb ? '230px' : '170px',
+            padding: '10px 12px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(224,168,80,0.06) 0.5px, transparent 0.5px), linear-gradient(180deg, #2a2010 0%, #1e1608 100%)',
+            backgroundSize: '6px 6px, 100% 100%',
+            border: mbFaulted ? faultBorder : '1px solid #5a4520',
+            boxShadow: mbFaulted ? faultGlow : '0 4px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+            transition: 'width 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: expandedMb ? '10px' : '0' }}>
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
+              letterSpacing: '0.06em', textTransform: 'uppercase', color: mbFaulted ? '#ff9999' : '#e0a850',
+            }}>
+              Motherboard
+            </span>
+            <span style={{ color: mbFaulted ? '#ff4444' : '#8a6a2a', fontSize: '10px' }}>{expandedMb ? '✕' : '▸'}</span>
+          </div>
+          {expandedMb && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {[0, 1].map((cpu) => (
+                <div key={cpu} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
+                    letterSpacing: '0.04em', textTransform: 'uppercase', color: '#c08a3a', textAlign: 'center',
+                  }}>
+                    CPU {cpu}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
+                    {DIMM_SLOTS.map((slot) => (
+                      <DimmModule key={slot} cpu={cpu} slot={slot}
+                        faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
