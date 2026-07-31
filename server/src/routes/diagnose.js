@@ -606,25 +606,130 @@ function parseHwdiagPowerFaults(output) {
   return { faults, raw: output };
 }
 
+// eve_ip.pyc's output has two real shapes:
+//  (1) single-node (the overwhelming majority of units): one flat Name/MAC/IP/Status table with
+//      bare "ILOM"/"ROT"/"HOSTNIC" rows.
+//  (2) dual-node — a chassis physically hosting two independent server nodes, each with its own
+//      full set of interfaces (confirmed real hardware, chassis SN 2630YW103D -> Node0 SN
+//      2630YW103P / Node1 SN 2630YW103Q, 2026-07-31): "Node0: <SN>" / "Node1: <SN>" headers, each
+//      followed by its own Name/MAC/IP/Status table using suffixed "ILOM0"/"ILOM1"/"ROT0"/"ROT1"/
+//      "HOSTNIC0"/"HOSTNIC1" row names, with a "====" divider line between the two blocks.
+// Always returns at least one node descriptor. `suffix` is '' for a single-node unit (matching
+// its own bare row names) or '0'/'1' for a dual-node unit; `nodeSn` is null for single-node (the
+// queried serialNumber IS the node) since a single-node unit's own table never repeats its SN the
+// way each "Node<n>:" header does.
+function parseEveIpNodes(eveOut) {
+  const nodeHeaderRe = /^Node(\d+):\s*(\S+)/gim;
+  const headers = [...eveOut.matchAll(nodeHeaderRe)];
+  const sections = headers.length > 0
+    ? headers.map((m, i) => ({
+        suffix: m[1],
+        nodeSn: m[2],
+        text: eveOut.slice(m.index, i + 1 < headers.length ? headers[i + 1].index : eveOut.length),
+      }))
+    : [{ suffix: '', nodeSn: null, text: eveOut }];
+
+  return sections.map(({ suffix, nodeSn, text }) => {
+    const ilomMatch = text.match(new RegExp(`^ILOM${suffix}\\s+\\S+\\s+(\\d{1,3}(?:\\.\\d{1,3}){3})\\s+(\\S+)`, 'im'));
+    const hostnicMatch = text.match(new RegExp(`^HOSTNIC${suffix}\\s+\\S+\\s+(\\d{1,3}(?:\\.\\d{1,3}){3})\\s+(\\S+)`, 'im'));
+    return {
+      suffix,
+      label: suffix ? `ILOM${suffix}` : 'ILOM',
+      nodeSn,
+      text,
+      ilomIp: ilomMatch ? ilomMatch[1] : null,
+      ilomStatus: ilomMatch ? ilomMatch[2] : null,
+      hostnicIp: hostnicMatch ? hostnicMatch[1] : null,
+      hostnicStatus: hostnicMatch ? hostnicMatch[2] : null,
+    };
+  });
+}
+
+// Prefixes every genericError with which node/ILOM it came from, and — since a dual-node unit's
+// two nodes are otherwise indistinguishable on a *structured* highlight (a "DIMM P0 D3" tile
+// doesn't say which node's motherboard it's on) — adds one extra genericError note whenever a
+// structured finding exists too, naming the node so a technician isn't left guessing which of the
+// two physical nodes actually needs attention. A single-node unit never calls this at all (see
+// each call site's own isMultiNode/explicitNode guard), so its output is completely unaffected.
+function tagFaultsWithNode(faults, node) {
+  const nodeTag = `${node.label}${node.nodeSn ? ` (node ${node.nodeSn})` : ''}`;
+  const hasStructured = ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'pcieFaults', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']
+    .some((key) => (faults[key] || []).length > 0);
+  const genericErrors = (faults.genericErrors || []).map((msg) => `[${nodeTag}] ${msg}`);
+  if (hasStructured) {
+    genericErrors.push(`[${nodeTag}] The finding(s) above (${(faults.components || []).join(', ') || 'see detail'}) were found on this node.`);
+  }
+  return { ...faults, genericErrors };
+}
+
+// Merges an array of per-node {faults, raw, gateParam?, chassisModel?, isE5E6Chassis?} results
+// (each already tagged via tagFaultsWithNode by the caller) into one combined result, for a
+// targeted check invoked standalone (no explicitNode — see runPowerOnCheck/runHostnicCheck) that
+// discovers a dual-node chassis via its own eve_ip call. gateParam takes the first node that
+// needed one (bypassing it applies to both nodes on the retry, since checkOptions is shared);
+// chassisModel takes the last node that reported one (both nodes are physically the same chassis
+// model, so this is only ever a redundant confirmation, not a real conflict).
+function mergeNodeResults(results) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  let raw = '';
+  let gateParam = null;
+  let chassisModel = null;
+  let isE5E6Chassis = false;
+  for (const r of results) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']) {
+      faults[key].push(...(r.faults[key] || []));
+    }
+    faults.pcieFaults.push(...(r.faults.pcieFaults || []));
+    faults.genericErrors.push(...(r.faults.genericErrors || []));
+    raw += (raw ? '\n\n' : '') + (r.raw || '');
+    if (!gateParam && r.gateParam) gateParam = r.gateParam;
+    if (r.chassisModel) { chassisModel = r.chassisModel; isE5E6Chassis = r.isE5E6Chassis; }
+  }
+  return { faults, raw, ...(gateParam ? { gateParam } : {}), ...(chassisModel ? { chassisModel, isE5E6Chassis } : {}) };
+}
+
 // Targeted flow for a POWER_ON-class failure (e.g. the HOST_POWER_ON_PRETEST stage seen in
 // mfg-collector/Jira tickets): eve_ip -> SSH into the ILOM -> /SP/diag/shell -> "hwdiag power get
 // amps all" -> "hwdiag power get volts all", then flag PS0/PS1 if either reports 0. Unlike
 // lionking_OSFP.py/GXR3_update_check (external scripts run locally), this one drives the ILOM
 // session directly, the same way the default chain's own hwdiag commands do.
-async function runPowerOnCheck(serialNumber, options = {}) {
-  console.log(`[diagnose] running POWER_ON check flow for ${serialNumber}: eve_ip -> ILOM -> show /SYS -> hwdiag power get amps/volts all`);
+//
+// explicitNode is passed by the default chain's own per-node loop (see the router handler below)
+// when this runs as part of that loop's Step 3 sweep against a dual-node chassis — it reuses the
+// eve_ip read the loop already did instead of paying for another one here, and returns *untagged*
+// faults since the outer loop applies tagFaultsWithNode itself. Called any other way (the mfg-
+// collector/Jira targeted-check short-circuit, or ?forceCheck=CHECK_POWER_ON) it resolves its own
+// node(s) from scratch exactly as before — and if that reveals more than one node on its own, it
+// runs this same procedure against each and merges+tags the results itself.
+async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) {
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  let rawPrefix = '';
 
-  const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-  const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-  if (!ilomRowMatch) {
-    return { faults: { ...emptyFaults, genericErrors: [`POWER_ON check: no ILOM interface found for ${serialNumber} in eve_ip output`] }, raw: eveOut };
+  if (!explicitNode) {
+    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+    const nodes = parseEveIpNodes(eveOut);
+    if (nodes.length > 1) {
+      console.log(`[diagnose] POWER_ON check: ${serialNumber} is a dual-node chassis (${nodes.map((n) => n.nodeSn).join(', ')}) — running the check against each node`);
+      const results = [];
+      for (const node of nodes) {
+        const r = await runPowerOnCheck(serialNumber, options, node);
+        results.push({ ...r, faults: tagFaultsWithNode(r.faults, node) });
+      }
+      return mergeNodeResults(results);
+    }
+    explicitNode = nodes[0];
+    rawPrefix = `${eveOut}\n`;
   }
-  const [, ilomIp, ilomStatus] = ilomRowMatch;
-  if (!/^up$/i.test(ilomStatus)) {
+
+  console.log(`[diagnose] running POWER_ON check flow for ${serialNumber} (${explicitNode.label}): eve_ip -> ILOM -> show /SYS -> hwdiag power get amps/volts all`);
+  const { ilomIp, ilomStatus, label: nodeLabel, hostnicIp, hostnicStatus } = explicitNode;
+  if (!ilomIp) {
+    return { faults: { ...emptyFaults, genericErrors: [`POWER_ON check: no ${nodeLabel} interface found for ${serialNumber} in eve_ip output`] }, raw: rawPrefix };
+  }
+  if (!/^up$/i.test(ilomStatus || '')) {
     return {
-      faults: { ...emptyFaults, genericErrors: [`POWER_ON check: ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} — cannot check power rails`] },
-      raw: eveOut,
+      faults: { ...emptyFaults, genericErrors: [`POWER_ON check: ${nodeLabel} for ${serialNumber} is reported ${(ilomStatus || 'DOWN').toUpperCase()} — cannot check power rails`] },
+      raw: rawPrefix,
     };
   }
 
@@ -634,26 +739,23 @@ async function runPowerOnCheck(serialNumber, options = {}) {
   // PS1 later read 0A on its main rail. Checked unconditionally, not just when a Jira ticket
   // happens to pair CHECK_POWER_ON with UPDATE_HOSTNIC_FW_REMOTE in its own text (the previous,
   // too-narrow trigger) — HOSTNIC's state is relevant context for interpreting the power-rail
-  // reading regardless of what the ticket says. Reuses the same eve_ip output already fetched for
-  // the ILOM row above, no extra round trip.
+  // reading regardless of what the ticket says. Reuses the eve_ip data already resolved above
+  // (whether from this node's own eve_ip call, or from explicitNode passed in by the caller), no
+  // extra round trip.
   //
   // options.bypassHostnicCheck (mirrors bypassPowerState below) lets the caller skip this gate and
   // run the power-rail check anyway — set when the user answers "yes" to the router's "keep
   // running the targeted check?" confirm prompt (see gateParam on the returned object: the router
   // uses it to know which flag to resend on that follow-up request).
-  const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-  if (hostnicRowMatch) {
-    const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
-    if (!/^up$/i.test(hostnicStatus)) {
-      if (!options.bypassHostnicCheck) {
-        return {
-          faults: { ...emptyFaults, genericErrors: [`POWER_ON check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
-          raw: eveOut,
-          gateParam: 'bypassHostnicCheck',
-        };
-      }
-      console.log(`[diagnose] POWER_ON check: HOSTNIC is "${hostnicStatus}" but bypassHostnicCheck was requested — running the power-rail check anyway`);
+  if (hostnicIp && !/^up$/i.test(hostnicStatus || '')) {
+    if (!options.bypassHostnicCheck) {
+      return {
+        faults: { ...emptyFaults, genericErrors: [`POWER_ON check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
+        raw: rawPrefix,
+        gateParam: 'bypassHostnicCheck',
+      };
     }
+    console.log(`[diagnose] POWER_ON check: HOSTNIC is "${hostnicStatus}" but bypassHostnicCheck was requested — running the power-rail check anyway`);
   }
 
   const ilomUser = process.env.ILOM_USER || 'root';
@@ -690,7 +792,7 @@ async function runPowerOnCheck(serialNumber, options = {}) {
     if (!options.bypassPowerState) {
       return {
         faults: { ...emptyFaults, genericErrors: [`POWER_ON check: /SYS power_state reports "${powerStateMatch[1]}" — server is not powered on`] },
-        raw: `${eveOut}\n${sysOut}`,
+        raw: `${rawPrefix}${sysOut}`,
         gateParam: 'bypassPowerState',
         chassisModel, isE5E6Chassis,
       };
@@ -709,7 +811,7 @@ async function runPowerOnCheck(serialNumber, options = {}) {
 
   const result = parseHwdiagPowerFaults(powerOut);
   console.log('[diagnose] POWER_ON check parsed faults:', JSON.stringify(result.faults));
-  return { faults: result.faults, raw: `${eveOut}\n${sysOut}\n${powerOut}`, chassisModel, isE5E6Chassis };
+  return { faults: result.faults, raw: `${rawPrefix}${sysOut}\n${powerOut}`, chassisModel, isE5E6Chassis };
 }
 
 // Targeted flow for an UPDATE_HOSTNIC_FW_REMOTE-class failure — that check needs the host's own
@@ -721,24 +823,44 @@ async function runPowerOnCheck(serialNumber, options = {}) {
 // CHECK_POWER_ON (which is the only other place this app currently checks HOSTNIC). Also means the
 // default chain's Step 3 sweep (which runs every entry in MFG_COLLECTOR_TARGETED_CHECKS
 // unconditionally) now checks HOSTNIC on every diagnosis, not just Jira-matched ones.
-async function runHostnicCheck(serialNumber) {
-  console.log(`[diagnose] running UPDATE_HOSTNIC_FW_REMOTE check flow for ${serialNumber}: eve_ip HOSTNIC status`);
+//
+// explicitNode/options follow the exact same contract as runPowerOnCheck above — see its own
+// comment for the full explanation. options is otherwise unused here (this check has no gate of
+// its own to bypass) but kept in the signature so runAndReportCheck can call every targeted check
+// the same uniform way.
+async function runHostnicCheck(serialNumber, options = {}, explicitNode = null) {
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  let rawPrefix = '';
 
-  const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
-  const hostnicRowMatch = eveOut.match(/^HOSTNIC\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-  if (!hostnicRowMatch) {
-    return { faults: { ...emptyFaults, genericErrors: [`UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} in eve_ip output`] }, raw: eveOut };
+  if (!explicitNode) {
+    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+    const nodes = parseEveIpNodes(eveOut);
+    if (nodes.length > 1) {
+      console.log(`[diagnose] UPDATE_HOSTNIC_FW_REMOTE check: ${serialNumber} is a dual-node chassis (${nodes.map((n) => n.nodeSn).join(', ')}) — running the check against each node`);
+      const results = [];
+      for (const node of nodes) {
+        const r = await runHostnicCheck(serialNumber, options, node);
+        results.push({ ...r, faults: tagFaultsWithNode(r.faults, node) });
+      }
+      return mergeNodeResults(results);
+    }
+    explicitNode = nodes[0];
+    rawPrefix = eveOut;
   }
-  const [, hostnicIp, hostnicStatus] = hostnicRowMatch;
-  if (!/^up$/i.test(hostnicStatus)) {
+
+  console.log(`[diagnose] running UPDATE_HOSTNIC_FW_REMOTE check flow for ${serialNumber} (${explicitNode.label}): eve_ip HOSTNIC status`);
+  const { hostnicIp, hostnicStatus, label: nodeLabel } = explicitNode;
+  if (!hostnicIp) {
+    return { faults: { ...emptyFaults, genericErrors: [`UPDATE_HOSTNIC_FW_REMOTE check: no HOSTNIC interface found for ${serialNumber} (${nodeLabel}) in eve_ip output`] }, raw: rawPrefix };
+  }
+  if (!/^up$/i.test(hostnicStatus || '')) {
     return {
       faults: { ...emptyFaults, genericErrors: [`UPDATE_HOSTNIC_FW_REMOTE check: HOSTNIC (${hostnicIp}) is reported ${hostnicStatus.toUpperCase()} — check the DAC cable`] },
-      raw: eveOut,
+      raw: rawPrefix,
     };
   }
   console.log(`[diagnose] UPDATE_HOSTNIC_FW_REMOTE check: HOSTNIC (${hostnicIp}) is up`);
-  return { faults: emptyFaults, raw: eveOut };
+  return { faults: emptyFaults, raw: rawPrefix };
 }
 
 // Maps a mfg-collector checkName to its targeted diagnostic flow. Add an entry here per check as
@@ -1355,15 +1477,26 @@ router.get('/', async (req, res) => {
   // keeping. Returns the full result ({faults, gateParam}) so callers can tell whether the check
   // actually found anything (see hasRealFinding below) and whether it stopped at a bypassable gate
   // (runPowerOnCheck's own power_state/HOSTNIC checks set gateParam when they do).
-  const runAndReportCheck = async (checkName, targetedCheck) => {
+  // explicitNode is passed only from within the default chain's own per-node loop (see
+  // runDefaultChainForNode further below), for a dual-node chassis (see parseEveIpNodes) — it's
+  // forwarded straight through to the targeted check itself (runPowerOnCheck/runHostnicCheck
+  // understand it; the others just ignore the extra argument) so it reuses that loop's own eve_ip
+  // read instead of the check re-deriving its own node(s) from scratch, and the resulting partial
+  // is labeled and fault-tagged by node here. Omitted (the vast majority of calls — the targeted-
+  // check short-circuit branch and the forceCheck path both call this with no explicitNode at
+  // all), this behaves exactly as before: plain checkName label, untagged faults.
+  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null) => {
+    const label = explicitNode ? `${explicitNode.label} ${checkName}` : checkName;
     try {
-      const result = await targetedCheck(serialNumber, checkOptions);
-      sendPartial(checkName, result.faults, result.raw);
+      const result = await targetedCheck(serialNumber, checkOptions, explicitNode);
+      const faults = explicitNode ? tagFaultsWithNode(result.faults, explicitNode) : result.faults;
+      sendPartial(label, faults, result.raw);
       return result;
     } catch (err) {
       console.error(`[diagnose] targeted check ${checkName} failed for ${serialNumber}:`, err.message);
-      const faults = { ...emptyFaults, genericErrors: [`${checkName} check failed: ${err.message}`] };
-      sendPartial(checkName, faults, err.message);
+      const rawFaults = { ...emptyFaults, genericErrors: [`${checkName} check failed: ${err.message}`] };
+      const faults = explicitNode ? tagFaultsWithNode(rawFaults, explicitNode) : rawFaults;
+      sendPartial(label, faults, err.message);
       return { faults };
     }
   };
@@ -1517,182 +1650,238 @@ router.get('/', async (req, res) => {
     // the SSH session below would simply fail to connect, but connection-refused/unreachable
     // text doesn't match any fault pattern, so parseIlomProblems returned zero faults and the
     // user saw a misleading "No open problems detected." instead of being told the ILOM is down.
+    //
+    // eve_ip can also return *two* nodes for a chassis that physically hosts two independent
+    // server nodes (see parseEveIpNodes) — isMultiNode branches into its own handling below;
+    // everything in the single-node branch is byte-for-byte the same as before this existed.
     const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
     console.log('[diagnose] eve_ip raw output:\n', eveOut);
-    const ilomRowMatch = eveOut.match(/^ILOM\s+\S+\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\S+)/im);
-    if (!ilomRowMatch) {
-      console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — sending fatal`);
-      sendFatal(`No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}`);
-      return res.end();
+    const eveNodes = parseEveIpNodes(eveOut);
+    const isMultiNode = eveNodes.length > 1;
+    if (isMultiNode) {
+      console.log(`[diagnose] eve_ip: ${serialNumber} is a dual-node chassis (${eveNodes.map((n) => `${n.label}=${n.nodeSn}`).join(', ')})`);
     }
-    const [, eveIlomIp, ilomStatus] = ilomRowMatch;
-    console.log(`[diagnose] eve_ip: ILOM row matched — IP ${eveIlomIp}, status "${ilomStatus}"`);
-    if (!/^up$/i.test(ilomStatus)) {
-      console.log(`[diagnose] eve_ip: ILOM status "${ilomStatus}" is not up — sending fatal, skipping the SSH chain entirely`);
-      sendFatal(`ILOM for ${serialNumber} is reported ${ilomStatus.toUpperCase()} (IP ${eveIlomIp}) by eve_ip — cannot run diagnostics until it is back up`);
-      return res.end();
-    }
-    const ilomIp = ilomIpParam || eveIlomIp;
-    console.log('[diagnose] ILOM IP:', ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
 
-    // Step 1.5: identify the chassis type before any fault data streams to the client — run as
-    // its own dedicated session (not combined into Step 2's Open_Problems session below) so its
-    // output never shares a parsing buffer with anything parseIlomProblems scans. A shared buffer
-    // once caused parseIlomProblems to false-positive on every PSU in an unrelated temp dump (see
-    // diagnose_parser_isolation memory) — "show /SYS"'s own Targets listing carries enough bare
-    // component names (IOU3, IOU6, ...) that feeding it into that same scan risked the same class
-    // of bug. Kept deliberately minimal (just this one read) and non-fatal: a failure here just
-    // means the chassis type stays whatever Jira already said (or unknown), it doesn't abort the
-    // rest of the chain.
-    try {
-      const identOut = await runIlomSession([
-        { line: 'show /SYS', delayAfterMs: 3000 },
-        { line: 'exit', delayAfterMs: 1500 },
-      ], ilomIp, process.env.ILOM_USER || 'root', process.env.ILOM_PASSWORD || 'changeme', 20000);
-      const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
-      if (productNameMatch) {
-        adoptLiveChassisModel({
-          chassisModel: productNameMatch[1].trim(),
-          isE5E6Chassis: E5_E6_MODEL_RE.test(productNameMatch[1].trim()),
-        });
+    let reachableNodes;
+    if (!isMultiNode) {
+      const node = eveNodes[0];
+      if (!node.ilomIp) {
+        console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — sending fatal`);
+        sendFatal(`No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}`);
+        return res.end();
       }
-    } catch (err) {
-      console.error('[diagnose] chassis identification (show /SYS) failed for', serialNumber, ':', err.message);
+      console.log(`[diagnose] eve_ip: ILOM row matched — IP ${node.ilomIp}, status "${node.ilomStatus}"`);
+      if (!/^up$/i.test(node.ilomStatus)) {
+        console.log(`[diagnose] eve_ip: ILOM status "${node.ilomStatus}" is not up — sending fatal, skipping the SSH chain entirely`);
+        sendFatal(`ILOM for ${serialNumber} is reported ${node.ilomStatus.toUpperCase()} (IP ${node.ilomIp}) by eve_ip — cannot run diagnostics until it is back up`);
+        return res.end();
+      }
+      if (ilomIpParam) node.ilomIp = ilomIpParam;
+      console.log('[diagnose] ILOM IP:', node.ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
+      reachableNodes = [node];
+    } else {
+      // An unreachable node is reported as its own partial rather than aborting a node that IS
+      // reachable — a dual-node chassis where only one node is actually down still deserves full
+      // diagnostics for the other. ilomIpParam (from /validate-sn) never applies here: that
+      // endpoint's own ILOM regex only ever resolves a single-ILOM unit's IP.
+      reachableNodes = [];
+      for (const node of eveNodes) {
+        if (!node.ilomIp) {
+          console.log(`[diagnose] eve_ip: no ${node.label} row matched for ${serialNumber}`);
+          sendPartial(node.label, { ...emptyFaults, genericErrors: [`No ${node.label} interface found for ${serialNumber} (node ${node.nodeSn}) in eve_ip output`] }, eveOut);
+          continue;
+        }
+        if (!/^up$/i.test(node.ilomStatus)) {
+          console.log(`[diagnose] eve_ip: ${node.label} status "${node.ilomStatus}" is not up — skipping this node`);
+          sendPartial(node.label, { ...emptyFaults, genericErrors: [`${node.label} (node ${node.nodeSn}) is reported ${node.ilomStatus.toUpperCase()} — skipping diagnostics for this node until it is back up`] }, eveOut);
+          continue;
+        }
+        reachableNodes.push(node);
+      }
+      if (reachableNodes.length === 0) {
+        sendFatal(`No reachable ILOM found for ${serialNumber} across ${eveNodes.length} nodes in eve_ip output: ${eveOut.trim()}`);
+        return res.end();
+      }
     }
 
-    // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
-    // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang
-    // indefinitely on some devices even with -tt forcing a pty — this ILOM's restricted CLI
-    // apparently doesn't reliably support that invocation mode. A manual/interactive session
-    // (connect, then type the command) works fine, so run it the same way: open a bare
-    // session and write the command to stdin via runIlomSession, matching tier 2/3. A
-    // trailing "exit" is required too — closing stdin (EOF) alone does not make this CLI log
-    // out and close the connection, it just sits at the prompt until the timeout kills it,
-    // even when the actual command already succeeded and returned a complete result.
     const ilomUser = process.env.ILOM_USER || 'root';
     const ilomPassword = process.env.ILOM_PASSWORD || 'changeme';
 
-    // Each of Step 2/3's SSH sessions below is wrapped in its own try/catch and reported as a
-    // partial either way, same reasoning as runAndReportCheck above — a timeout on any one of them
-    // (Open_Problems, fmadm, or the hwdiag session) must not discard whatever the others already
-    // found or are still about to find.
-    //
-    // The generic fan-capacity fallback (see parseIlomProblems' fanCapacityAlert) can't be judged
-    // from Open_Problems/fmadm alone — only hwdiag (parsed further below) knows the chassis type
-    // and which fan/PSU bays are actually populated — so it's held back here instead of being sent
-    // as its own partial immediately, and only resolved once hwdiag's result (or failure) is known.
-    let fanCapacityAlertPending = false;
-    let hwdiagOut = null;
-    try {
-      const ilomOut = await runIlomSession(
-        [
-          { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
+    // Steps 1.5/2/3 (chassis identification, Open_Problems, fmadm/hwdiag/every targeted check) —
+    // extracted into a per-node function so a dual-node chassis runs the *exact same procedure*
+    // against each of its nodes independently, matching single-ILOM behavior for each. Every
+    // sendPartial label and fault is tagged by node (tagLabel/tagFaults, both no-ops when
+    // isMultiNode is false) so the B300 visualizer's fault banners always say which physical
+    // node/ILOM a finding came from once there's more than one to distinguish.
+    const runDefaultChainForNode = async (node) => {
+      const ilomIp = node.ilomIp;
+      const tagLabel = (label) => (isMultiNode ? `${node.label} ${label}` : label);
+      const tagFaults = (faults) => (isMultiNode ? tagFaultsWithNode(faults, node) : faults);
+      const nodeSuffix = isMultiNode ? ` (${node.label})` : '';
+
+      // Step 1.5: identify the chassis type before any fault data streams to the client — run as
+      // its own dedicated session (not combined into Step 2's Open_Problems session below) so its
+      // output never shares a parsing buffer with anything parseIlomProblems scans. A shared
+      // buffer once caused parseIlomProblems to false-positive on every PSU in an unrelated temp
+      // dump (see diagnose_parser_isolation memory) — "show /SYS"'s own Targets listing carries
+      // enough bare component names (IOU3, IOU6, ...) that feeding it into that same scan risked
+      // the same class of bug. Kept deliberately minimal (just this one read) and non-fatal: a
+      // failure here just means the chassis type stays whatever Jira already said (or unknown),
+      // it doesn't abort the rest of the chain.
+      try {
+        const identOut = await runIlomSession([
+          { line: 'show /SYS', delayAfterMs: 3000 },
           { line: 'exit', delayAfterMs: 1500 },
-        ],
-        ilomIp, ilomUser, ilomPassword, 30000
-      );
-      console.log('[diagnose] ILOM raw output:\n', ilomOut);
-      const openProblemsParsed = parseIlomProblems(ilomOut);
-      console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
-      if (openProblemsParsed.fanCapacityAlert) fanCapacityAlertPending = true;
-      sendPartial('Open_Problems', openProblemsParsed.faults, ilomOut);
-    } catch (err) {
-      console.error('[diagnose] Open_Problems check failed for', serialNumber, ':', err.message);
-      sendPartial('Open_Problems', { ...emptyFaults, genericErrors: [`Open_Problems check failed: ${err.message}`] }, err.message);
-    }
-
-    // Step 3: run every remaining diagnostic tier unconditionally and merge all findings, rather
-    // than stopping at the first tier that finds something — a unit can have more than one real
-    // problem at once (e.g. a fabric-test PCIe failure *and* a GXR3 firmware failure), and
-    // stopping early would silently hide whichever one didn't happen to run first. This is
-    // deliberately slow (every diagnosis now pays for every check, every time) in exchange for
-    // completeness.
-    //
-    // fmadm and hwdiag are run as two separate sessions (rather than one combined session/
-    // buffer) so each output is parsed in isolation. parseIlomProblems's "/SYS/PS<n>" regex
-    // matches any mention of a PSU resource, not just faulted ones — running it against a
-    // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
-    // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
-    // faulted, instead of only the ones genuinely at 0.00 deg C.
-    console.log('[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally');
-
-    try {
-      const fmadmOut = await runIlomSession([
-        { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
-        { line: 'fmadm faulty -a', delayAfterMs: 10000 },
-        { line: 'exit', delayAfterMs: 1500 },
-      ], ilomIp, ilomUser, ilomPassword, 45000);
-      console.log('[diagnose] fmadm raw output:\n', fmadmOut);
-      const fmadmParsed = parseIlomProblems(fmadmOut);
-      console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
-      if (fmadmParsed.fanCapacityAlert) fanCapacityAlertPending = true;
-      sendPartial('fmadm', fmadmParsed.faults, fmadmOut);
-    } catch (err) {
-      console.error('[diagnose] fmadm check failed for', serialNumber, ':', err.message);
-      sendPartial('fmadm', { ...emptyFaults, genericErrors: [`fmadm check failed: ${err.message}`] }, err.message);
-    }
-
-    try {
-      hwdiagOut = await runIlomSession([
-        { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
-        // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI reference
-        // wiring vs. what's actually connected) is what catches a swapped IOU PCIe/power cable, the
-        // same class of fault previously only visible via a technician's pasted session in a Jira
-        // ticket (see parseHwdiagIoCableFaults). No real-hardware timing confirmation yet for this
-        // one, so 8000ms is a starting estimate — bump it if it turns out to get cut off the same
-        // way "hwdiag temp get all" did below before its delay was corrected.
-        { line: 'hwdiag io config', delayAfterMs: 8000 },
-        { line: 'hwdiag fan info', delayAfterMs: 5000 },
-        // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
-        // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
-        // trailing "exit" landed while the diag shell was still busy and cut the sensor table
-        // off entirely (only the header printed before the connection closed).
-        { line: 'hwdiag temp get all', delayAfterMs: 15000 },
-        // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
-        // cached values like the two commands above — no real-hardware timing confirmation for
-        // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
-        // to get cut off the same way temp get all did.
-        { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
-        { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
-        { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-      ], ilomIp, ilomUser, ilomPassword, 85000);
-      console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
-
-      const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
-      console.log('[diagnose] hwdiag io config parsed faults:', JSON.stringify(ioConfigParsed.faults));
-      sendPartial('hwdiag io config', ioConfigParsed.faults, hwdiagOut);
-      const fanParsed = parseHwdiagFanInfo(hwdiagOut);
-      console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
-      sendPartial('hwdiag fan info', fanParsed.faults, hwdiagOut);
-      const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
-      console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
-      sendPartial('hwdiag temp get all', tempParsed.faults, hwdiagOut);
-      const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
-      console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
-      sendPartial('hwdiag system fabric test all', fabricParsed.faults, hwdiagOut);
-    } catch (err) {
-      console.error('[diagnose] hwdiag check failed for', serialNumber, ':', err.message);
-      sendPartial('hwdiag', { ...emptyFaults, genericErrors: [`hwdiag check failed: ${err.message}`] }, err.message);
-    }
-
-    // Resolve the fan-capacity alert held back above, now that hwdiag's chassis-type/bay-presence
-    // result (or lack of one) is known.
-    if (fanCapacityAlertPending) {
-      if (isNormalReducedFanChassis(hwdiagOut)) {
-        console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber} — confirmed 2U chassis with FM0/FM1/FM2/PS0/PS1 all present`);
-      } else {
-        sendPartial(
-          'fan-capacity-check',
-          { ...emptyFaults, components: ['gpu'], genericErrors: ['Fan-related problem reported (insufficient cooling capacity or multiple fan issues) — see raw output for detail'] },
-          ''
-        );
+        ], ilomIp, ilomUser, ilomPassword, 20000);
+        const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
+        if (productNameMatch) {
+          adoptLiveChassisModel({
+            chassisModel: productNameMatch[1].trim(),
+            isE5E6Chassis: E5_E6_MODEL_RE.test(productNameMatch[1].trim()),
+          });
+        }
+      } catch (err) {
+        console.error(`[diagnose] chassis identification (show /SYS) failed for ${serialNumber}${nodeSuffix}:`, err.message);
       }
-    }
 
-    for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
-      console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}`);
-      const stepResult = await runAndReportCheck(checkName, targetedCheck);
-      adoptLiveChassisModel(stepResult);
+      // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
+      // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang
+      // indefinitely on some devices even with -tt forcing a pty — this ILOM's restricted CLI
+      // apparently doesn't reliably support that invocation mode. A manual/interactive session
+      // (connect, then type the command) works fine, so run it the same way: open a bare
+      // session and write the command to stdin via runIlomSession, matching tier 2/3. A
+      // trailing "exit" is required too — closing stdin (EOF) alone does not make this CLI log
+      // out and close the connection, it just sits at the prompt until the timeout kills it,
+      // even when the actual command already succeeded and returned a complete result.
+      //
+      // Each of Step 2/3's SSH sessions below is wrapped in its own try/catch and reported as a
+      // partial either way, same reasoning as runAndReportCheck above — a timeout on any one of
+      // them (Open_Problems, fmadm, or the hwdiag session) must not discard whatever the others
+      // already found or are still about to find.
+      //
+      // The generic fan-capacity fallback (see parseIlomProblems' fanCapacityAlert) can't be
+      // judged from Open_Problems/fmadm alone — only hwdiag (parsed further below) knows the
+      // chassis type and which fan/PSU bays are actually populated — so it's held back here
+      // instead of being sent as its own partial immediately, and only resolved once hwdiag's
+      // result (or failure) is known.
+      let fanCapacityAlertPending = false;
+      let hwdiagOut = null;
+      try {
+        const ilomOut = await runIlomSession(
+          [
+            { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
+            { line: 'exit', delayAfterMs: 1500 },
+          ],
+          ilomIp, ilomUser, ilomPassword, 30000
+        );
+        console.log(`[diagnose] ILOM raw output${nodeSuffix}:\n`, ilomOut);
+        const openProblemsParsed = parseIlomProblems(ilomOut);
+        console.log('[diagnose] parsed faults:', JSON.stringify(openProblemsParsed.faults));
+        if (openProblemsParsed.fanCapacityAlert) fanCapacityAlertPending = true;
+        sendPartial(tagLabel('Open_Problems'), tagFaults(openProblemsParsed.faults), ilomOut);
+      } catch (err) {
+        console.error(`[diagnose] Open_Problems check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        sendPartial(tagLabel('Open_Problems'), tagFaults({ ...emptyFaults, genericErrors: [`Open_Problems check failed: ${err.message}`] }), err.message);
+      }
+
+      // Step 3: run every remaining diagnostic tier unconditionally and merge all findings,
+      // rather than stopping at the first tier that finds something — a unit can have more than
+      // one real problem at once (e.g. a fabric-test PCIe failure *and* a GXR3 firmware failure),
+      // and stopping early would silently hide whichever one didn't happen to run first. This is
+      // deliberately slow (every diagnosis now pays for every check, every time) in exchange for
+      // completeness.
+      //
+      // fmadm and hwdiag are run as two separate sessions (rather than one combined session/
+      // buffer) so each output is parsed in isolation. parseIlomProblems's "/SYS/PS<n>" regex
+      // matches any mention of a PSU resource, not just faulted ones — running it against a
+      // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
+      // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
+      // faulted, instead of only the ones genuinely at 0.00 deg C.
+      console.log(`[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally, for ${serialNumber}${nodeSuffix}`);
+
+      try {
+        const fmadmOut = await runIlomSession([
+          { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
+          { line: 'fmadm faulty -a', delayAfterMs: 10000 },
+          { line: 'exit', delayAfterMs: 1500 },
+        ], ilomIp, ilomUser, ilomPassword, 45000);
+        console.log('[diagnose] fmadm raw output:\n', fmadmOut);
+        const fmadmParsed = parseIlomProblems(fmadmOut);
+        console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
+        if (fmadmParsed.fanCapacityAlert) fanCapacityAlertPending = true;
+        sendPartial(tagLabel('fmadm'), tagFaults(fmadmParsed.faults), fmadmOut);
+      } catch (err) {
+        console.error(`[diagnose] fmadm check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        sendPartial(tagLabel('fmadm'), tagFaults({ ...emptyFaults, genericErrors: [`fmadm check failed: ${err.message}`] }), err.message);
+      }
+
+      try {
+        hwdiagOut = await runIlomSession([
+          { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+          // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI
+          // reference wiring vs. what's actually connected) is what catches a swapped IOU PCIe/
+          // power cable, the same class of fault previously only visible via a technician's
+          // pasted session in a Jira ticket (see parseHwdiagIoCableFaults). No real-hardware
+          // timing confirmation yet for this one, so 8000ms is a starting estimate — bump it if
+          // it turns out to get cut off the same way "hwdiag temp get all" did below before its
+          // delay was corrected.
+          { line: 'hwdiag io config', delayAfterMs: 8000 },
+          { line: 'hwdiag fan info', delayAfterMs: 5000 },
+          // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
+          // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
+          // trailing "exit" landed while the diag shell was still busy and cut the sensor table
+          // off entirely (only the header printed before the connection closed).
+          { line: 'hwdiag temp get all', delayAfterMs: 15000 },
+          // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
+          // cached values like the two commands above — no real-hardware timing confirmation for
+          // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
+          // to get cut off the same way temp get all did.
+          { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
+          { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
+          { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
+        ], ilomIp, ilomUser, ilomPassword, 85000);
+        console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
+
+        const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
+        console.log('[diagnose] hwdiag io config parsed faults:', JSON.stringify(ioConfigParsed.faults));
+        sendPartial(tagLabel('hwdiag io config'), tagFaults(ioConfigParsed.faults), hwdiagOut);
+        const fanParsed = parseHwdiagFanInfo(hwdiagOut);
+        console.log('[diagnose] hwdiag fan parsed faults:', JSON.stringify(fanParsed.faults));
+        sendPartial(tagLabel('hwdiag fan info'), tagFaults(fanParsed.faults), hwdiagOut);
+        const tempParsed = parseHwdiagTempGetAll(hwdiagOut);
+        console.log('[diagnose] hwdiag temp parsed faults:', JSON.stringify(tempParsed.faults));
+        sendPartial(tagLabel('hwdiag temp get all'), tagFaults(tempParsed.faults), hwdiagOut);
+        const fabricParsed = parseHwdiagFabricTestAll(hwdiagOut);
+        console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
+        sendPartial(tagLabel('hwdiag system fabric test all'), tagFaults(fabricParsed.faults), hwdiagOut);
+      } catch (err) {
+        console.error(`[diagnose] hwdiag check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        sendPartial(tagLabel('hwdiag'), tagFaults({ ...emptyFaults, genericErrors: [`hwdiag check failed: ${err.message}`] }), err.message);
+      }
+
+      // Resolve the fan-capacity alert held back above, now that hwdiag's chassis-type/bay-
+      // presence result (or lack of one) is known.
+      if (fanCapacityAlertPending) {
+        if (isNormalReducedFanChassis(hwdiagOut)) {
+          console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber}${nodeSuffix} — confirmed 2U chassis with FM0/FM1/FM2/PS0/PS1 all present`);
+        } else {
+          sendPartial(
+            tagLabel('fan-capacity-check'),
+            tagFaults({ ...emptyFaults, components: ['gpu'], genericErrors: ['Fan-related problem reported (insufficient cooling capacity or multiple fan issues) — see raw output for detail'] }),
+            ''
+          );
+        }
+      }
+
+      for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+        console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}${nodeSuffix}`);
+        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null);
+        adoptLiveChassisModel(stepResult);
+      }
+    };
+
+    for (const node of reachableNodes) {
+      await runDefaultChainForNode(node);
     }
 
     sendDone({
