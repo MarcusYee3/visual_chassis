@@ -51,7 +51,7 @@ const pillTagStyle = {
   whiteSpace: 'nowrap', textAlign: 'center',
 };
 
-function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
+function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel, reportMode = false, onPartClick }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   // 'front' or 'back' — only one face is ever shown at once, toggled the same way the B300/E5-2c
   // page switch itself works (see App.jsx), rather than stacking both faces on top of each other.
@@ -114,9 +114,11 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
 
   const renderIou = (n) => {
     const faulted = iouFaulted(n);
+    const reportLabel = IOU_ROLES[n] ? `IOU ${n} (${IOU_ROLES[n]})` : `IOU ${n}`;
+    const handleClick = reportMode ? () => onPartClick(`iou-${n}`, reportLabel) : () => toggleIou(n);
     return (
       <div key={n} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={() => toggleIou(n)} hasFault={faulted}
+        <OSFPModule id={`iou-${n}`} name={IOU_ROLES[n] || `IOU ${n}`} onClick={handleClick} hasFault={faulted}
           bodyStyle={{ height: '78px' }} labelStyle={{ fontSize: '11px' }} />
         {expandedIou[n] && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }} title={`Bay IOU ${n}`}>
@@ -202,17 +204,26 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
               140px to 100px instead of touching zoom, since at 140px the row's total fixed content
               (2 PSUs + 3 zoomed square fans + gaps) exceeded the 900px container's inner width and
               bled off the edges once flexShrink:0 stopped it from silently compressing instead. */}
-          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)} /></div>
+          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}>
+            <PSUPort id="psu-port-1" name="PS0" faulted={psuFaulted(0)}
+              onClick={reportMode ? () => onPartClick('psu-port-1', 'PSU 1') : undefined} />
+          </div>
           <div style={{ display: 'flex', gap: '40px', flexShrink: 0, alignItems: 'flex-end' }}>
             {[0, 1, 2].map((n) => (
               // FanModule's own box is content-sized (narrower than tall) — style={{width}} forces
               // it square (to its own natural height) before zoom scales the whole thing up 3x.
+              // Displayed fan number (n) is 0-indexed but the fault-matching/report id is n+1 — see
+              // fanFaulted above (matches the same B300<->E5/E6 offset memory note).
               <div key={n} style={{ flexShrink: 0, zoom: 3 }}>
-                <FanModule number={n} faulted={fanFaulted(n)} style={{ width: '47px' }} />
+                <FanModule number={n} faulted={fanFaulted(n)} style={{ width: '47px' }}
+                  onClick={reportMode ? () => onPartClick(`fan-${n + 1}`, `Fan ${n + 1}`) : undefined} />
               </div>
             ))}
           </div>
-          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}><PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)} /></div>
+          <div style={{ width: '100px', flexShrink: 0, zoom: 1.5 }}>
+            <PSUPort id="psu-port-2" name="PS1" faulted={psuFaulted(1)}
+              onClick={reportMode ? () => onPartClick('psu-port-2', 'PSU 2') : undefined} />
+          </div>
         </div>
       )}
     </div>
@@ -270,7 +281,8 @@ function E5E6Overview({ refreshKey = 0, faults = EMPTY_FAULTS, chassisModel }) {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
                     {DIMM_SLOTS.map((slot) => (
                       <DimmModule key={slot} cpu={cpu} slot={slot}
-                        faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
+                        faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)}
+                        onClick={reportMode ? () => onPartClick(`dimm-p${cpu}-d${slot}`, `DIMM P${cpu} D${slot}`) : undefined} />
                     ))}
                   </div>
                 </div>

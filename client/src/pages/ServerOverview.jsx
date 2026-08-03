@@ -82,7 +82,7 @@ const OSFP_BD_GROUPS = [
 // vary per unit) since every unit with this platform has the same slot count.
 const DIMM_SLOTS = Array.from({ length: 16 }, (_, i) => i);
 
-function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
+function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = false, onPartClick }) {
   const { data: server, loading, error } = useServerData('server-1', refreshKey);
   const [osfpModules, setOsfpModules] = useState([]);
   const [expandedMb, setExpandedMb] = useState(false);
@@ -214,10 +214,15 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                       const port = allOsfpPorts[slot - 1];
                       const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
                         || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
+                      // A stable id independent of whether allOsfpPorts has loaded yet — used for
+                      // report mode (rather than port?.id, which no whole-OSFP-module fault ever
+                      // targets anyway; only cable-/pcie-level sub-faults do).
+                      const reportId = `osfp-slot-${slot}`;
+                      const handleClick = reportMode ? () => onPartClick(reportId, `OSFP ${slot}`) : () => handleOsfpSlotClick(slot);
                       return (
                         <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          <OSFPModule id={port?.id || `osfp-slot-${slot}`} name={`OSFP ${slot}`}
-                            onClick={() => handleOsfpSlotClick(slot)}
+                          <OSFPModule id={port?.id || reportId} name={`OSFP ${slot}`}
+                            onClick={handleClick}
                             hasFault={hasFault} />
                           {expandedOsfpSlot[slot] && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
@@ -273,7 +278,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             {[25, 19, 13, 7, 1].map((rowStart) => (
               <div key={rowStart} style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
                 {Array.from({ length: 6 }, (_, i) => rowStart + i).map((n) => (
-                  <FanModule key={n} number={n} faulted={(faults.fanIds || []).includes(n)} />
+                  <FanModule key={n} number={n} faulted={(faults.fanIds || []).includes(n)}
+                    onClick={reportMode ? () => onPartClick(`fan-${n}`, `Fan ${n}`) : undefined} />
                 ))}
               </div>
             ))}
@@ -291,8 +297,9 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
 
             {/* Left: E1S A + BMC + ROT */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <E1SBoard id="e1s-a" name="E1S A" faulted={faults.e1sIds.includes('e1s-a')} />
-              <div id="bmc-card" style={{
+              <E1SBoard id="e1s-a" name="E1S A" faulted={faults.e1sIds.includes('e1s-a')}
+                onClick={reportMode ? () => onPartClick('e1s-a', 'E1S A') : undefined} />
+              <div id="bmc-card" onClick={reportMode ? () => onPartClick('bmc', 'BMC Card') : undefined} style={{
                 flex: 1,
                 backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(192,132,252,0.07) 0.5px, transparent 0.5px), linear-gradient(180deg, #1e1a30 0%, #161228 100%)',
                 backgroundSize: '6px 6px, 100% 100%',
@@ -300,17 +307,19 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                 boxShadow: bmcFaulted ? faultGlow : 'none',
                 borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '5px', padding: '0 5px', minHeight: '26px',
                 animation: bmcFaulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
+                cursor: reportMode ? 'pointer' : 'default',
               }}>
                 <div style={{ width: '3px', height: '3px', borderRadius: '50%', background: bmcFaulted ? '#ff4444' : '#c084fc', boxShadow: bmcFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(192,132,252,0.5)', flexShrink: 0 }} />
                 <span style={{ ...fontStyle, color: bmcFaulted ? '#ff9999' : '#7a5aaa' }}>BMC Card</span>
               </div>
-              <div id="rot-card" style={{
+              <div id="rot-card" onClick={reportMode ? () => onPartClick('rot', 'ROT 4.1') : undefined} style={{
                 backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(251,191,36,0.06) 0.5px, transparent 0.5px), linear-gradient(180deg, #1a1e28 0%, #111620 100%)',
                 backgroundSize: '6px 6px, 100% 100%',
                 border: rotFaulted ? faultBorder : '1px solid #2a3040',
                 boxShadow: rotFaulted ? faultGlow : 'none',
                 borderRadius: '2px', display: 'flex', alignItems: 'center', gap: '5px', padding: '5px',
                 animation: rotFaulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
+                cursor: reportMode ? 'pointer' : 'default',
               }}>
                 <div style={{ width: '3px', height: '3px', borderRadius: '50%', background: rotFaulted ? '#ff4444' : '#fbbf24', boxShadow: rotFaulted ? '0 0 6px rgba(255,68,68,0.9)' : '0 0 4px rgba(251,191,36,0.4)', flexShrink: 0 }} />
                 <span style={{ ...fontStyle, color: rotFaulted ? '#ff9999' : '#607090' }}>ROT 4.1</span>
@@ -327,10 +336,13 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px' }}>
                   {[1, 2, 3, 4, 5, 6, 7, 8].map((slot) => {
                     const iou = OSFP_SLOT_TO_IOU[slot];
+                    const handleRetimerOrReportClick = reportMode
+                      ? () => onPartClick(`retimer-${iou}`, `Retimer ${iou}`)
+                      : () => handleRetimerClick(slot);
                     return (
                       <div key={slot} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <GXR3VRetimer id={`retimer-${iou}`} name={`OSFP ${slot}`}
-                          onClick={() => handleRetimerClick(slot)}
+                          onClick={handleRetimerOrReportClick}
                           faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
                         {expandedRetimerCable[slot] && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
@@ -356,7 +368,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                     return (
                       <PCIeSwitch key={switchNum} id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum}`}
                         faulted={switchFaulted}
-                        title={`PCIE_SW${switchNum}${switchFaulted ? ' — FAILED' : ''}`} />
+                        title={`PCIE_SW${switchNum}${switchFaulted ? ' — FAILED' : ''}`}
+                        onClick={reportMode ? () => onPartClick(`pcie-sw-${switchNum}`, `PCIE SW ${switchNum}`) : undefined} />
                     );
                   })}
                 </div>
@@ -369,7 +382,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
 
             {/* Right: E1S B + filler */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <E1SBoard id="e1s-b" name="E1S B" faulted={faults.e1sIds.includes('e1s-b')} />
+              <E1SBoard id="e1s-b" name="E1S B" faulted={faults.e1sIds.includes('e1s-b')}
+                onClick={reportMode ? () => onPartClick('e1s-b', 'E1S B') : undefined} />
               <div style={{ flex: 1, background: 'linear-gradient(180deg, #161a1e 0%, #0e1114 100%)', border: '1px solid #222628', borderRadius: '2px' }} />
             </div>
           </div>
@@ -383,13 +397,15 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
               {topRow.map((port) => (
                 <PSUPort key={port.id} id={port.id} name={port.name} status={port.status}
-                  faulted={faults.psuPorts.includes(port.id)} />
+                  faulted={faults.psuPorts.includes(port.id)}
+                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10)}`) : undefined} />
               ))}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
               {bottomRow.map((port) => (
                 <PSUPort key={port.id} id={port.id} name={port.name} status={port.status}
-                  faulted={faults.psuPorts.includes(port.id)} />
+                  faulted={faults.psuPorts.includes(port.id)}
+                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10)}`) : undefined} />
               ))}
             </div>
           </div>
@@ -452,7 +468,8 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS }) {
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px' }}>
                       {DIMM_SLOTS.map((slot) => (
                         <DimmModule key={slot} cpu={cpu} slot={slot}
-                          faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)} />
+                          faulted={(faults.dimmIds || []).includes(`dimm-p${cpu}-d${slot}`)}
+                          onClick={reportMode ? () => onPartClick(`dimm-p${cpu}-d${slot}`, `DIMM P${cpu} D${slot}`) : undefined} />
                       ))}
                     </div>
                   </div>

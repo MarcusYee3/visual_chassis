@@ -1,8 +1,17 @@
 import styles from './E1SBoard.module.css';
 
-function E1SBoard({ id, name, faulted = false }) {
+function E1SBoard({ id, name, faulted = false, onClick }) {
   return (
-    <div id={id} className={`${styles.board} ${faulted ? styles.faulted : ''}`} aria-label={name}>
+    <div
+      id={id}
+      className={`${styles.board} ${faulted ? styles.faulted : ''}`}
+      aria-label={name}
+      style={{ cursor: onClick ? 'pointer' : undefined }}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => (e.key === 'Enter' || e.key === ' ') && onClick() : undefined}
+    >
       <div className={styles.handle}>
         <div className={styles.handleGrip} />
       </div>

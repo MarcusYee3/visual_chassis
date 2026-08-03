@@ -3,6 +3,7 @@ import ServerForm from './components/Form/Form';
 import ServerOverview from './pages/ServerOverview';
 import E5E6Overview from './pages/E5E6Overview';
 import LogFailurePanel from './components/LogFailurePanel/LogFailurePanel';
+import ReportCart from './components/ReportCart/ReportCart';
 import NavMenu from './components/NavMenu/NavMenu';
 import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
@@ -66,12 +67,31 @@ function App() {
   // layout page below instead of the default B300 visualizer.
   const [chassisModel, setChassisModel] = useState(null);
   const [isE5E6Chassis, setIsE5E6Chassis] = useState(false);
+  const [serialNumber, setSerialNumber] = useState('');
+  // Manual "report any part" flow (separate from LogFailurePanel's auto-detected-fault flow
+  // above) — reportMode gates whether clicking a chassis part opens the report-confirm dialog
+  // instead of that part's own normal click behavior (see ServerOverview.jsx/E5E6Overview.jsx).
+  // Confirmed parts land in reportCart, which the user pushes to the log all at once.
+  const [reportMode, setReportMode] = useState(false);
+  const [reportCart, setReportCart] = useState([]);
+  const [pendingReport, setPendingReport] = useState(null); // { partId, partLabel }
+
+  const handlePartClick = (partId, partLabel) => setPendingReport({ partId, partLabel });
+  const handleConfirmPending = () => {
+    setReportCart((prev) => (prev.some((p) => p.partId === pendingReport.partId) ? prev : [...prev, pendingReport]));
+    setPendingReport(null);
+  };
+  const handleCancelPending = () => setPendingReport(null);
+  const handleRemoveFromCart = (partId) => setReportCart((prev) => prev.filter((p) => p.partId !== partId));
 
   const handleFormSubmit = async (formData) => {
     await updateServer('server-1', { serialNumber: formData.sn });
     setFaults(EMPTY_FAULTS);
     setRefreshKey((k) => k + 1);
     setLogPanel(null);
+    setSerialNumber(formData.sn);
+    setReportCart([]);
+    setPendingReport(null);
 
     setDiagnosing(true);
     setDiagnoseError('');
@@ -212,7 +232,28 @@ function App() {
             </button>
           ))}
         </div>
-        <NavMenu />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+          {/* Manual "report any part" mode — while on, clicking a part on the chassis (instead of
+              its normal reveal/expand click, see ServerOverview.jsx/E5E6Overview.jsx) opens the
+              report-confirm dialog below instead. Disabled until a server is loaded since there's
+              no serialNumber yet to attach a report to. */}
+          <button
+            onClick={() => setReportMode((v) => !v)}
+            disabled={!serialNumber}
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
+              letterSpacing: '0.05em', textTransform: 'uppercase', padding: '6px 12px',
+              cursor: serialNumber ? 'pointer' : 'default', borderRadius: '4px',
+              border: reportMode ? '1px solid #8a6a2a' : '1px solid #33405a',
+              background: reportMode
+                ? 'linear-gradient(180deg, #4a3512 0%, #362408 100%)' : 'transparent',
+              color: !serialNumber ? '#4a5670' : (reportMode ? '#e8c890' : '#6a7a99'),
+            }}
+          >
+            {reportMode ? 'Reporting — click a part' : 'Report Issue'}
+          </button>
+          <NavMenu />
+        </div>
       </div>
       {/* gap is wider than it looks like it needs to be — the chassis's U-height labels and left
           rack ear are absolutely positioned outside its own 740px layout box (see
@@ -231,8 +272,8 @@ function App() {
           )}
         </div>
         {isE5E6Chassis
-          ? <E5E6Overview refreshKey={refreshKey} faults={faults} chassisModel={chassisModel} />
-          : <ServerOverview refreshKey={refreshKey} faults={faults} />}
+          ? <E5E6Overview refreshKey={refreshKey} faults={faults} chassisModel={chassisModel} reportMode={reportMode} onPartClick={handlePartClick} />
+          : <ServerOverview refreshKey={refreshKey} faults={faults} reportMode={reportMode} onPartClick={handlePartClick} />}
       </div>
       {/* genericErrors, diagnoseError, and LogFailurePanel all get their own full-width row below
           the sidebar (rather than squeezed into the 300px sidebar column, or — for genericErrors —
@@ -259,6 +300,16 @@ function App() {
           checkName={logPanel.checkName}
           source={logPanel.source}
           onDismiss={() => setLogPanel(null)}
+        />
+      )}
+      {serialNumber && (reportMode || reportCart.length > 0 || pendingReport) && (
+        <ReportCart
+          serialNumber={serialNumber}
+          cart={reportCart}
+          onRemove={handleRemoveFromCart}
+          pendingPart={pendingReport}
+          onConfirmPending={handleConfirmPending}
+          onCancelPending={handleCancelPending}
         />
       )}
     </div>
