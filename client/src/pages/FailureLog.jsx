@@ -47,8 +47,8 @@ const cardLabelStyle = {
   fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6a7a99',
 };
 
-// Top N [key, count] pairs from a plain tally object, most-frequent first — used for both the
-// "top failing part" and "top failing check" stat cards below.
+// Top N [key, count] pairs from a plain tally object, most-frequent first — used for the
+// "top failing check" stat and the per-unit "frequent parts" lookup below.
 function topEntries(tally, n) {
   return Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, n);
 }
@@ -66,6 +66,10 @@ function FailureLog() {
   const [checkFilter, setCheckFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  // Which unit the "frequent parts" lookup below is scoped to — deliberately its own control,
+  // separate from the free-text search/filter bar, since "what fails often on this one unit"
+  // is a different question from "find entries matching X".
+  const [selectedUnit, setSelectedUnit] = useState('');
 
   useEffect(() => {
     getAllPartFailures()
@@ -77,17 +81,14 @@ function FailureLog() {
   // Stats reflect the *whole* log regardless of the filters below — an overall health summary,
   // not a recap of whatever's currently being searched for.
   const stats = useMemo(() => {
-    const byPart = {};
     const byCheck = {};
     const byUnit = {};
     for (const e of entries) {
-      byPart[e.part_label] = (byPart[e.part_label] || 0) + 1;
       byCheck[e.check_name || 'Unknown'] = (byCheck[e.check_name || 'Unknown'] || 0) + 1;
       byUnit[e.serial_number] = (byUnit[e.serial_number] || 0) + 1;
     }
     return {
       total: entries.length,
-      topParts: topEntries(byPart, 3),
       topChecks: topEntries(byCheck, 3),
       repeatUnits: Object.values(byUnit).filter((count) => count > 1).length,
     };
@@ -97,6 +98,33 @@ function FailureLog() {
     () => [...new Set(entries.map((e) => e.check_name).filter(Boolean))].sort(),
     [entries]
   );
+
+  const unitOptions = useMemo(
+    () => [...new Set(entries.map((e) => e.serial_number))].sort(),
+    [entries]
+  );
+
+  // Defaults to whichever unit has the most logged failures — the one most worth looking at —
+  // once entries load; the technician can still pick any other unit from the dropdown.
+  useEffect(() => {
+    if (selectedUnit || entries.length === 0) return;
+    const byUnit = {};
+    for (const e of entries) byUnit[e.serial_number] = (byUnit[e.serial_number] || 0) + 1;
+    const [topUnit] = topEntries(byUnit, 1)[0] || [];
+    if (topUnit) setSelectedUnit(topUnit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only meant to run once entries first load
+  }, [entries]);
+
+  // Which parts fail often on the one unit currently selected above — not a global ranking.
+  const unitPartCounts = useMemo(() => {
+    if (!selectedUnit) return [];
+    const byPart = {};
+    for (const e of entries) {
+      if (e.serial_number !== selectedUnit) continue;
+      byPart[e.part_label] = (byPart[e.part_label] || 0) + 1;
+    }
+    return topEntries(byPart, 5);
+  }, [entries, selectedUnit]);
 
   const hasActiveFilter = !!(search || checkFilter || dateFrom || dateTo);
 
@@ -183,8 +211,19 @@ function FailureLog() {
               <span style={{ fontSize: '20px', fontWeight: 700, color: '#cdd6e8' }}>{stats.total}</span>
             </div>
             <div style={cardStyle}>
-              <span style={cardLabelStyle}>Top Failing Part{stats.topParts.length > 1 ? 's' : ''}</span>
-              {stats.topParts.map(([label, count]) => (
+              <span style={cardLabelStyle}>Frequent Parts — Unit</span>
+              <select
+                style={{ ...inputStyle, padding: '3px 6px', fontSize: '10px' }}
+                value={selectedUnit}
+                onChange={(e) => setSelectedUnit(e.target.value)}
+              >
+                <option value="">Select unit…</option>
+                {unitOptions.map((sn) => <option key={sn} value={sn}>{sn}</option>)}
+              </select>
+              {selectedUnit && unitPartCounts.length === 0 && (
+                <span style={{ fontSize: '11px', color: '#6a7a99' }}>No failures logged for this unit.</span>
+              )}
+              {unitPartCounts.map(([label, count]) => (
                 <span key={label} style={{ fontSize: '11px', color: '#cdd6e8' }}>{label} <span style={{ color: '#6a7a99' }}>×{count}</span></span>
               ))}
             </div>
