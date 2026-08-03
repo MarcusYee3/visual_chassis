@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { getAllPartFailures, deletePartFailures } from '../services/api';
 
@@ -20,6 +20,39 @@ const buttonStyle = (variant) => ({
   color: variant === 'danger' ? '#e8b0b0' : '#a8c4e8',
 });
 
+const inputStyle = {
+  ...fontStyle,
+  fontSize: '11px',
+  padding: '5px 8px',
+  borderRadius: '3px',
+  border: '1px solid #33405a',
+  background: '#161b28',
+  color: '#cdd6e8',
+};
+
+const cardStyle = {
+  ...fontStyle,
+  flex: 1,
+  padding: '10px 12px',
+  borderRadius: '6px',
+  border: '1px solid #2a3550',
+  backgroundImage: 'radial-gradient(circle at 3px 3px, rgba(168,196,232,0.04) 0.5px, transparent 0.5px), linear-gradient(180deg, #1a2030 0%, #141926 100%)',
+  backgroundSize: '6px 6px, 100% 100%',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+};
+
+const cardLabelStyle = {
+  fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6a7a99',
+};
+
+// Top N [key, count] pairs from a plain tally object, most-frequent first — used for both the
+// "top failing part" and "top failing check" stat cards below.
+function topEntries(tally, n) {
+  return Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, n);
+}
+
 function FailureLog() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +62,10 @@ function FailureLog() {
   // single-row delete, or "N entries" for a bulk delete), so one dialog covers both flows.
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [search, setSearch] = useState('');
+  const [checkFilter, setCheckFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   useEffect(() => {
     getAllPartFailures()
@@ -36,6 +73,50 @@ function FailureLog() {
       .catch((e) => setError(e.message || 'Failed to load failure log'))
       .finally(() => setLoading(false));
   }, []);
+
+  // Stats reflect the *whole* log regardless of the filters below — an overall health summary,
+  // not a recap of whatever's currently being searched for.
+  const stats = useMemo(() => {
+    const byPart = {};
+    const byCheck = {};
+    const byUnit = {};
+    for (const e of entries) {
+      byPart[e.part_label] = (byPart[e.part_label] || 0) + 1;
+      byCheck[e.check_name || 'Unknown'] = (byCheck[e.check_name || 'Unknown'] || 0) + 1;
+      byUnit[e.serial_number] = (byUnit[e.serial_number] || 0) + 1;
+    }
+    return {
+      total: entries.length,
+      topParts: topEntries(byPart, 3),
+      topChecks: topEntries(byCheck, 3),
+      repeatUnits: Object.values(byUnit).filter((count) => count > 1).length,
+    };
+  }, [entries]);
+
+  const checkOptions = useMemo(
+    () => [...new Set(entries.map((e) => e.check_name).filter(Boolean))].sort(),
+    [entries]
+  );
+
+  const hasActiveFilter = !!(search || checkFilter || dateFrom || dateTo);
+
+  const filteredEntries = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return entries.filter((e) => {
+      if (q && !e.serial_number.toLowerCase().includes(q) && !e.part_label.toLowerCase().includes(q)) return false;
+      if (checkFilter && e.check_name !== checkFilter) return false;
+      if (dateFrom && e.logged_at < dateFrom) return false;
+      if (dateTo && e.logged_at > `${dateTo} 23:59:59`) return false;
+      return true;
+    });
+  }, [entries, search, checkFilter, dateFrom, dateTo]);
+
+  const clearFilters = () => {
+    setSearch('');
+    setCheckFilter('');
+    setDateFrom('');
+    setDateTo('');
+  };
 
   const toggleSelected = (id) => {
     setSelected((prev) => {
@@ -93,11 +174,74 @@ function FailureLog() {
       {loading && <p style={{ color: '#999' }}>Loading…</p>}
       {error && <p style={{ color: '#ff8080' }}>{error}</p>}
 
+      {!loading && !error && entries.length > 0 && (
+        <>
+          {/* Overview stats — always the full log, independent of the search/filter bar below. */}
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+            <div style={cardStyle}>
+              <span style={cardLabelStyle}>Total Logged</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: '#cdd6e8' }}>{stats.total}</span>
+            </div>
+            <div style={cardStyle}>
+              <span style={cardLabelStyle}>Top Failing Part{stats.topParts.length > 1 ? 's' : ''}</span>
+              {stats.topParts.map(([label, count]) => (
+                <span key={label} style={{ fontSize: '11px', color: '#cdd6e8' }}>{label} <span style={{ color: '#6a7a99' }}>×{count}</span></span>
+              ))}
+            </div>
+            <div style={cardStyle}>
+              <span style={cardLabelStyle}>Top Failing Check{stats.topChecks.length > 1 ? 's' : ''}</span>
+              {stats.topChecks.map(([label, count]) => (
+                <span key={label} style={{ fontSize: '11px', color: '#cdd6e8' }}>{label} <span style={{ color: '#6a7a99' }}>×{count}</span></span>
+              ))}
+            </div>
+            <div style={cardStyle}>
+              <span style={cardLabelStyle}>Repeat-Failure Units</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: stats.repeatUnits > 0 ? '#ff9999' : '#cdd6e8' }}>{stats.repeatUnits}</span>
+            </div>
+          </div>
+
+          {/* Search/filter bar — narrows the table below only; stats above stay whole-log. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+            <input
+              style={{ ...inputStyle, flex: '1 1 220px' }}
+              type="text"
+              placeholder="Search serial number or part…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <select style={inputStyle} value={checkFilter} onChange={(e) => setCheckFilter(e.target.value)}>
+              <option value="">All checks</option>
+              {checkOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <label style={{ fontSize: '10px', color: '#8fa8d6', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              From
+              <input style={inputStyle} type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+            </label>
+            <label style={{ fontSize: '10px', color: '#8fa8d6', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              To
+              <input style={inputStyle} type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+            </label>
+            {hasActiveFilter && (
+              <button style={buttonStyle()} onClick={clearFilters}>Clear</button>
+            )}
+          </div>
+          {hasActiveFilter && (
+            <p style={{ color: '#6a7a99', fontSize: '10px', margin: '0 0 8px' }}>
+              Showing {filteredEntries.length} of {entries.length} entries
+            </p>
+          )}
+        </>
+      )}
+
       {!loading && !error && entries.length === 0 && (
         <p style={{ color: '#999', fontSize: '12px' }}>No part failures logged yet.</p>
       )}
 
-      {!loading && entries.length > 0 && (
+      {!loading && entries.length > 0 && filteredEntries.length === 0 && (
+        <p style={{ color: '#999', fontSize: '12px' }}>No entries match the current filters.</p>
+      )}
+
+      {!loading && filteredEntries.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
           <thead>
             <tr style={{ textAlign: 'left', color: '#8fa8d6', borderBottom: '1px solid #3a4a6b' }}>
@@ -111,7 +255,7 @@ function FailureLog() {
             </tr>
           </thead>
           <tbody>
-            {entries.map((e) => (
+            {filteredEntries.map((e) => (
               <tr key={e.id} style={{ borderBottom: '1px solid #23293b', color: '#cdd6e8' }}>
                 <td style={{ padding: '6px 8px' }}>
                   <input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} />
