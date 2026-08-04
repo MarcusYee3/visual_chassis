@@ -212,8 +212,11 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                     const renderModule = (slot) => {
                       const iou = OSFP_SLOT_TO_IOU[slot];
                       const port = allOsfpPorts[slot - 1];
-                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou)
-                        || (faults.cableFaults || []).some((id) => id.split('-').slice(1).map(Number).includes(iou));
+                      // A cable fault (VERIFY_OSFP_LINKS finding a down loopback link between two
+                      // OSFP modules) is a fault on the cable itself, not on either module it
+                      // connects — only a genuine pcieFault against this specific IOU lights up the
+                      // module; the cable fault is rendered exclusively on the connector below.
+                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou);
                       // A stable id independent of whether allOsfpPorts has loaded yet — used for
                       // report mode (rather than port?.id, which no whole-OSFP-module fault ever
                       // targets anyway; only cable-/pcie-level sub-faults do).
