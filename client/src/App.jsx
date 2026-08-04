@@ -177,10 +177,17 @@ function App() {
       // here since diagnoseError above already covers it.
       if (terminalEvent && terminalEvent.type !== 'fatal') {
         setFlowNotice(terminalEvent.defaultFlowNotice || (terminalEvent.type === 'confirm' ? terminalEvent.message : ''));
-        // Only ever set on a real {type:'done'} (a declined confirm never reaches one, so these
-        // just stay at their reset defaults — the B300 page — in that case).
-        setChassisModel(terminalEvent.chassisModel || null);
-        setIsE5E6Chassis(!!terminalEvent.isE5E6Chassis);
+        // Only a real {type:'done'} carries chassisModel/isE5E6Chassis (see sendDone vs.
+        // sendConfirm in diagnose.js) — a declined confirm's terminalEvent has neither field, so
+        // unconditionally overwriting here with `terminalEvent.chassisModel || null` reset the
+        // page back to B300 even when an earlier mid-stream {type:'chassis'} event (e.g. from the
+        // Jira ticket's Model field, sent before CHECK_POWER_ON ever ran) had already correctly
+        // identified an E5-2c/E6-2c unit. Only apply the terminal event's values when it's the one
+        // event type that actually carries them — otherwise keep whatever the stream already set.
+        if (terminalEvent.type === 'done') {
+          setChassisModel(terminalEvent.chassisModel || null);
+          setIsE5E6Chassis(!!terminalEvent.isE5E6Chassis);
+        }
         const hasFaults = accumulated.components.length > 0 || (accumulated.genericErrors || []).length > 0;
         // Any source that isn't the "default-ilom-chain (...)" tag means the response came from a
         // short-circuit (a matched targeted check, a forced check, or faults already documented in
