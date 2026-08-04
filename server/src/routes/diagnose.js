@@ -1875,21 +1875,6 @@ router.get('/', async (req, res) => {
 
       for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
         console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}${nodeSuffix}`);
-        // VERIFY_OSFP_LINKS (lionking_OSFP.py) only reports link status meaningfully when it's
-        // actually the check being investigated (a mfg-collector/Jira match) — run unconditionally
-        // here like every other check for completeness/timing consistency, but don't surface a
-        // cable fault from it into the fault log/banners unless VERIFY_OSFP_LINKS is genuinely
-        // targetedCheckName for this request. Otherwise a routine sweep-run of an unreliable-
-        // outside-its-own-context check could get logged as a real cable failure.
-        if (checkName === 'VERIFY_OSFP_LINKS' && targetedCheckName !== 'VERIFY_OSFP_LINKS') {
-          try {
-            const result = await targetedCheck(serialNumber, checkOptions, isMultiNode ? node : null);
-            console.log(`[diagnose] VERIFY_OSFP_LINKS ran during the unconditional sweep for ${serialNumber}${nodeSuffix} (not the matched error case) — suppressing its result:`, JSON.stringify(result.faults));
-          } catch (err) {
-            console.error(`[diagnose] VERIFY_OSFP_LINKS failed during the unconditional sweep for ${serialNumber}${nodeSuffix} (suppressed, not the matched error case):`, err.message);
-          }
-          continue;
-        }
         const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null);
         adoptLiveChassisModel(stepResult);
       }
