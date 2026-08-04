@@ -1880,9 +1880,14 @@ router.get('/', async (req, res) => {
       }
     };
 
-    for (const node of reachableNodes) {
-      await runDefaultChainForNode(node);
-    }
+    // Each node's chain talks to a fully independent ILOM (its own ilomIp, own runIlomSession
+    // child process, own local fanCapacityAlertPending/hwdiagOut closure vars — see
+    // runIlomSession above, which has no shared/module-level state between calls), so a dual-node
+    // chassis can run both chains concurrently instead of paying their combined latency back to
+    // back. sendPartial/sendChassisInfo are synchronous per-call res.write()s (no interleaving
+    // risk on Node's single-threaded event loop), and adoptLiveChassisModel's shared chassisModel/
+    // isE5E6Chassis guard is idempotent no matter which node's "show /SYS" read resolves first.
+    await Promise.all(reachableNodes.map((node) => runDefaultChainForNode(node)));
 
     sendDone({
       // defaultFlowNotice is a status update ("running the default chain because X"), not a
