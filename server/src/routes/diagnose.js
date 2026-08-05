@@ -1085,6 +1085,52 @@ function parseHwdiagIoCableFaults(text) {
   return { faults, raw: text };
 }
 
+// hwdiag_io_config's own cross-check on IOU *bay presence* (distinct from parseHwdiagIoCableFaults
+// above, which is about the PCIe cabling to a bay) — one ERROR block per bay whose GI-expected
+// presence disagrees with what's actually there, e.g. a module physically moved from one bay to
+// another (confirmed against a real captured Failure Message):
+//   hwdiag_io_config -> IOU Bay 15 in GI:
+//   NO_PRESENT
+//   hwdiag_io_config -> IOU Bay 15 in system:
+//   IOU Bay: 15, IOU Module: PCIE_HH
+//   Check Result: FAIL
+//   hwdiag_io_config -> IOU Bay 9 in GI:
+//   IOU Bay: 9, IOU Module: PCIE_HH
+//   hwdiag_io_config -> IOU Bay 9 in system:
+//   MISSING
+//   Check Result: FAIL.
+// The GI/system value line is either a bare NO_PRESENT/MISSING keyword or a structured "IOU Bay: N,
+// IOU Module: X" / "IOU Bay: N, PCIe Data Connectors on IOU Module: [...]" line — captured as
+// free text either way since only whether the bay is present/absent (not the module details)
+// drives the message here. The same real transcript often repeats each bay's block twice (once
+// per hwdiag_io_config sub-check), so dedupe by bay number the same way
+// parseIouFruPositionFaults does for repeated IOU mentions.
+function parseHwdiagIoConfigBayFaults(text) {
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const compSet = new Set();
+  const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
+  const reportedBays = new Set();
+
+  const blockRe = /hwdiag_io_config\s*->\s*IOU Bay (\d+) in GI:\s*[\r\n]+\s*([^\r\n]+?)\s*[\r\n]+\s*hwdiag_io_config\s*->\s*IOU Bay \d+ in system:\s*[\r\n]+\s*([^\r\n]+?)\s*[\r\n]+\s*Check Result:\s*(PASS|FAIL)\.?/gi;
+  let m;
+  while ((m = blockRe.exec(text)) !== null) {
+    const [, bayNum, giValue, sysValue, result] = m;
+    if (result.toUpperCase() !== 'FAIL' || reportedBays.has(bayNum)) continue;
+    reportedBays.add(bayNum);
+    const giAbsent = /^(NO_PRESENT|MISSING)$/i.test(giValue.trim());
+    const sysAbsent = /^(NO_PRESENT|MISSING)$/i.test(sysValue.trim());
+    const detail = giAbsent
+      ? `not expected per GI reference (${giValue.trim()}) but found "${sysValue.trim()}" in system — likely a module relocated here from another bay`
+      : sysAbsent
+        ? `expected "${giValue.trim()}" per GI reference but reported ${sysValue.trim()} in system — likely relocated to another bay, reseat and reverify`
+        : `GI reference ("${giValue.trim()}") disagrees with system ("${sysValue.trim()}")`;
+    faults.genericErrors.push(`hwdiag_io_config: IOU Bay ${bayNum} ${detail}`);
+    addComp('gbb');
+  }
+
+  return { faults, raw: text };
+}
+
 // A technician doesn't always paste a structured hwdiag_io_cables transcript into the ticket —
 // sometimes the comment is just plain prose ("PSU3 is dead", "Fan 12 not spinning", "IOU5 link
 // down"). This catches those looser mentions the same way the real SSH-output parsers above key
@@ -1232,12 +1278,18 @@ async function fetchJiraCheckInfo(jiraLink) {
   // to its normal serialNumber-based behavior untouched.
   const fixtureSn = descriptionFields.get('Fixture SN') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
-  // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
-  // comment's "body" (the Jira API's field name for that comment's text) so
-  // parseHwdiagIoCableFaults can scan across all of them regardless of which comment it was pasted
-  // into.
+  // documenting the fault) can live either in the ticket's comments, or directly in the
+  // Description's own Failure Message field (confirmed against a real captured Failure Message
+  // carrying a full hwdiag_io_cables/hwdiag_io_config transcript) — concatenate every comment's
+  // "body" (the Jira API's field name for that comment's text) plus failureMessage so
+  // parseHwdiagIoCableFaults/parseHwdiagIoConfigBayFaults scan both regardless of which field a
+  // given ticket happens to put it in. Safe to combine for these two specifically since they only
+  // ever match a fully-structured "...Check Result: FAIL" block, not a loose keyword — unlike the
+  // generic mention scan below, there's no false-positive risk from also scanning comments.
   const commentsText = (data?.fields?.comment?.comments || []).map((c) => c.body || '').join('\n\n');
-  const cableFaultsResult = parseHwdiagIoCableFaults(commentsText);
+  const hwdiagTranscriptText = `${commentsText}\n\n${failureMessage}`;
+  const cableFaultsResult = parseHwdiagIoCableFaults(hwdiagTranscriptText);
+  const bayFaultsResult = parseHwdiagIoConfigBayFaults(hwdiagTranscriptText);
   // Deliberately scoped to *only* the Failure Message field, not summary/description/comments — a
   // technician's comment often quotes a full "hwdiag io config"/"hwdiag io cables" session (see
   // parseHwdiagIoCableFaults above), which lists every IOU/PCIe connector on the chassis as normal
@@ -1266,10 +1318,15 @@ async function fetchJiraCheckInfo(jiraLink) {
       ...cableFaultsResult.faults,
       genericErrors: [
         ...cableFaultsResult.faults.genericErrors,
+        ...bayFaultsResult.faults.genericErrors,
         ...iouFruResult.faults.genericErrors,
         ...mentionsResult.faults.genericErrors,
       ],
-      components: [...new Set([...cableFaultsResult.faults.components, ...iouFruResult.faults.components])],
+      components: [...new Set([
+        ...cableFaultsResult.faults.components,
+        ...bayFaultsResult.faults.components,
+        ...iouFruResult.faults.components,
+      ])],
     },
   };
 }
