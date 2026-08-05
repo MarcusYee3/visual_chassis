@@ -1126,6 +1126,15 @@ function parseHwdiagIoConfigBayFaults(text) {
         : `GI reference ("${giValue.trim()}") disagrees with system ("${sysValue.trim()}")`;
     faults.genericErrors.push(`hwdiag_io_config: IOU Bay ${bayNum} ${detail}`);
     addComp('gbb');
+    // Only the bay that LOST its expected module (sysAbsent) lights up the GBB Tray's OSFP/IOU
+    // module directly — that's the physically empty bay a technician needs to act on. The bay an
+    // unexpected module turned up in (giAbsent) isn't flagged the same way: the module itself is
+    // presumably fine, it's just sitting in the wrong slot, and the genericError above already
+    // names it. hasFault on the chassis UI matches pcieFaults by `iou` alone (see
+    // ServerOverview.jsx's renderModule), so pcie/probability are irrelevant here — set null.
+    if (sysAbsent) {
+      faults.pcieFaults.push({ resource: `IOU${bayNum} bay presence`, iou: parseInt(bayNum, 10), pcie: null, probability: null });
+    }
   }
 
   return { faults, raw: text };
@@ -1322,6 +1331,11 @@ async function fetchJiraCheckInfo(jiraLink) {
         ...iouFruResult.faults.genericErrors,
         ...mentionsResult.faults.genericErrors,
       ],
+      // bayFaultsResult is the only one of these that ever populates pcieFaults (a bay that lost
+      // its expected module — see parseHwdiagIoConfigBayFaults) — without this, the base
+      // ...cableFaultsResult.faults spread above would silently overwrite it with [], since that
+      // parser never touches pcieFaults itself.
+      pcieFaults: [...cableFaultsResult.faults.pcieFaults, ...bayFaultsResult.faults.pcieFaults],
       components: [...new Set([
         ...cableFaultsResult.faults.components,
         ...bayFaultsResult.faults.components,
