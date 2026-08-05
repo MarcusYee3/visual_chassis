@@ -340,7 +340,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                   {[1, 2, 3, 4, 5, 6, 7, 8].map((slot) => {
                     const iou = OSFP_SLOT_TO_IOU[slot];
                     const handleRetimerOrReportClick = reportMode
-                      ? () => onPartClick(`retimer-${iou}`, `Retimer ${iou}`)
+                      ? () => onPartClick(`retimer-${iou}`, `Retimer IOU ${iou}`)
                       : () => handleRetimerClick(slot);
                     return (
                       <div key={slot} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>

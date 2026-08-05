@@ -27,8 +27,10 @@ export function getLoggableParts(faults) {
   });
 
   (faults.retimerIds || []).forEach((id) => {
+    // num is the real IOU number this retimer is wired to (retimer-<iou>), not the retimer's own
+    // sequential index — "Retimer IOU N" makes that explicit instead of reading like an index.
     const num = parseInt(String(id).replace(/\D/g, ''), 10);
-    parts.push({ partId: `retimer-${num}`, partLabel: `Retimer ${num}` });
+    parts.push({ partId: `retimer-${num}`, partLabel: `Retimer IOU ${num}` });
   });
 
   (faults.e1sIds || []).forEach((id) => {
