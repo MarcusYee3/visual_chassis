@@ -532,9 +532,16 @@ function parseGxr3FwUpdateCheck(output) {
 // -- same directory as eve_ip.pyc, not lionking_OSFP.py.
 const GXR3_UPDATE_CHECK_PATH = '/home/tester/WesleyH/GXR3_update_check';
 
-async function runGxr3FwUpdateCheck(serialNumber) {
-  console.log(`[diagnose] running: echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`);
-  const output = await localExec(`echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`, 30000);
+// checkOptions.fixtureSn (set only when the Jira ticket's description carries a "*Fixture SN:*"
+// field — see fetchJiraCheckInfo) takes priority over the entered/UUT serialNumber for this one
+// check specifically: some GXR3 FW update tickets are filed against the test fixture rather than
+// the unit itself, so the script needs the fixture's own SN piped in, not the UUT's. Falls back to
+// serialNumber whenever no Fixture SN field was present — every other caller (forceCheck, the
+// Step 3 unconditional sweep with no Jira link, etc.) is unaffected.
+async function runGxr3FwUpdateCheck(serialNumber, checkOptions = {}) {
+  const snToUse = checkOptions.fixtureSn || serialNumber;
+  console.log(`[diagnose] running: echo ${snToUse} | ${GXR3_UPDATE_CHECK_PATH}${checkOptions.fixtureSn ? ` (fixture SN ${snToUse}, not entered SN ${serialNumber})` : ''}`);
+  const output = await localExec(`echo ${snToUse} | ${GXR3_UPDATE_CHECK_PATH}`, 30000);
   console.log('[diagnose] gxr3_fw_update_check raw output:\n', output);
   const result = parseGxr3FwUpdateCheck(output);
   console.log('[diagnose] gxr3_fw_update_check parsed faults:', JSON.stringify(result.faults));
@@ -1218,6 +1225,12 @@ async function fetchJiraCheckInfo(jiraLink) {
   // by describeJiraFlow below to route E5-2c/E6-2c units to their own chassis layout page instead
   // of the default B300 visualizer.
   const model = descriptionFields.get('Model') || '';
+  // Some UPDATE_GXR3_FW tickets are filed against a test fixture rather than the unit itself —
+  // when present, runGxr3FwUpdateCheck pipes this SN in instead of the entered/UUT serialNumber
+  // (see checkOptions.fixtureSn below). Empty string (not present, same as every other field here)
+  // whenever this ticket has no such field, which is the common case — the check then falls back
+  // to its normal serialNumber-based behavior untouched.
+  const fixtureSn = descriptionFields.get('Fixture SN') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) lives in the ticket's comments, not the summary — concatenate every
   // comment's "body" (the Jira API's field name for that comment's text) so
@@ -1240,6 +1253,7 @@ async function fetchJiraCheckInfo(jiraLink) {
     failedTestcase,
     failureMessage,
     model,
+    fixtureSn,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
@@ -1303,7 +1317,7 @@ async function describeJiraFlow(jiraLink) {
       targetedCheckName: null,
       resolvedFaults: info.cableFaults,
       resolvedRaw: info.commentsText,
-      chassisModel, isE5E6Chassis,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
     };
   }
 
@@ -1313,12 +1327,12 @@ async function describeJiraFlow(jiraLink) {
   // description's Failed Testcase/Failure Message fields, and the comments directly so none of
   // those shapes get missed.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis };
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis };
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -1327,14 +1341,14 @@ async function describeJiraFlow(jiraLink) {
         `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
       sourceTag: 'jira-no-targeted-flow',
       targetedCheckName: null,
-      chassisModel, isE5E6Chassis,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
     };
   }
   return {
     notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
     sourceTag: 'jira-no-check-code',
     targetedCheckName: null,
-    chassisModel, isE5E6Chassis,
+    chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
   };
 }
 
@@ -1464,9 +1478,9 @@ router.get('/', async (req, res) => {
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   // ?bypassPowerState=1 / ?bypassHostnicCheck=1 let the user skip runPowerOnCheck's own /SYS
-  // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. Passed
-  // unconditionally to every targeted check below — every check besides runPowerOnCheck simply
-  // ignores the extra options argument.
+  // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. fixtureSn (added
+  // below, once jiraFlow is known) is read only by runGxr3FwUpdateCheck. Passed unconditionally to
+  // every targeted check below — a check that doesn't recognize a given key simply ignores it.
   const checkOptions = {
     bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true',
     bypassHostnicCheck: bypassHostnicCheck === '1' || bypassHostnicCheck === 'true',
@@ -1563,6 +1577,14 @@ router.get('/', async (req, res) => {
     let {
       notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
+    // Only ever set when the Jira ticket's description actually carried a "*Fixture SN:*" field —
+    // runGxr3FwUpdateCheck uses this in place of serialNumber for UPDATE_GXR3_FW specifically
+    // (both the short-circuit match below and the Step 3 unconditional sweep read the same
+    // checkOptions object), and every other targeted check ignores it entirely.
+    if (jiraFlow?.fixtureSn) {
+      checkOptions.fixtureSn = jiraFlow.fixtureSn;
+      console.log(`[diagnose] Jira ticket carries a Fixture SN (${jiraFlow.fixtureSn}) — UPDATE_GXR3_FW will use it instead of the entered SN (${serialNumber})`);
+    }
     // Seeded from describeJiraFlow (describeDefaultFlow has no Model field to read, since
     // mfg-collector's JBOG table doesn't carry one) but reassigned below (`let`, not `const`)
     // whenever CHECK_POWER_ON actually runs and reads the live "show /SYS" product_name — that's
