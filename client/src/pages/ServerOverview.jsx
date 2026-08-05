@@ -221,15 +221,23 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                       // report mode (rather than port?.id, which no whole-OSFP-module fault ever
                       // targets anyway; only cable-/pcie-level sub-faults do).
                       const reportId = `osfp-slot-${slot}`;
-                      const handleClick = reportMode ? () => onPartClick(reportId, `OSFP ${slot}`) : () => handleOsfpSlotClick(slot);
+                      // Display-only 0-indexing (slot - 1) — the internal `slot`/`reportId`/fault
+                      // matching all stay exactly as-is (1-8, matching OSFP_SLOT_TO_IOU and every
+                      // other table keyed by it); only the on-screen label shifts. The "IOU {iou}"
+                      // reveal below is deliberately NOT touched — iou is a real physical IOU slot
+                      // number quoted verbatim from hardware/Jira/hwdiag text throughout this app,
+                      // not an arbitrary UI index, so renumbering it would make the tool disagree
+                      // with what's actually silkscreened on the chassis.
+                      const displaySlot = slot - 1;
+                      const handleClick = reportMode ? () => onPartClick(reportId, `OSFP ${displaySlot}`) : () => handleOsfpSlotClick(slot);
                       return (
                         <div key={slot} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          <OSFPModule id={port?.id || reportId} name={`OSFP ${slot}`}
+                          <OSFPModule id={port?.id || reportId} name={`OSFP ${displaySlot}`}
                             onClick={handleClick}
                             hasFault={hasFault} />
                           {expandedOsfpSlot[slot] && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                              title={`OSFP ${slot} <-> IOU ${iou}`}>
+                              title={`OSFP ${displaySlot} <-> IOU ${iou}`}>
                               <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
                               <div style={{
                                 fontFamily: "'JetBrains Mono', monospace", fontSize: '7px', fontWeight: 700,
@@ -249,7 +257,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                         <div style={{ display: 'flex', alignItems: 'flex-start' }}>
                           {renderModule(slotA)}
                           <div style={{ display: 'flex', alignItems: 'center', width: '18px', flexShrink: 0, marginTop: '16px' }}
-                            title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${cableFaulted ? ' — DOWN' : ''}`}>
+                            title={`Loopback cable: OSFP ${slotA - 1} <-> OSFP ${slotB - 1}${cableFaulted ? ' — DOWN' : ''}`}>
                             <div style={cablePlugStyle} />
                             <div style={{
                               flex: 1, height: 0, borderTop: `2px dotted ${cableColor}`,
@@ -263,7 +271,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                           fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
                           letterSpacing: '0.05em', color: cableFaulted ? '#ff8080' : '#7a8bab', textAlign: 'center',
                         }}>
-                          CABLE {slotA}-{slotB}
+                          CABLE {slotA - 1}-{slotB - 1}
                         </div>
                       </div>
                     );
@@ -281,8 +289,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
             {[25, 19, 13, 7, 1].map((rowStart) => (
               <div key={rowStart} style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
                 {Array.from({ length: 6 }, (_, i) => rowStart + i).map((n) => (
-                  <FanModule key={n} number={n} faulted={(faults.fanIds || []).includes(n)}
-                    onClick={reportMode ? () => onPartClick(`fan-${n}`, `Fan ${n}`) : undefined} />
+                  // number is display-only (FanModule just prints it) — faulted/partId below still
+                  // key off the real 1-30 fault-matching id n, only the on-screen "FAN N" shifts.
+                  <FanModule key={n} number={n - 1} faulted={(faults.fanIds || []).includes(n)}
+                    onClick={reportMode ? () => onPartClick(`fan-${n}`, `Fan ${n - 1}`) : undefined} />
                 ))}
               </div>
             ))}
@@ -329,27 +339,33 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
               </div>
             </div>
 
-            {/* Center: Retimer BD — the 8 GXR3 retimer cards are labeled/ordered by OSFP slot
-                (see OSFP_SLOT_TO_IOU) rather than raw IOU number, matching the GBB Tray's own
-                OSFP numbering. Clicking one reveals a cable-link tag naming its actual IOU, same
-                pairing the GBB Tray's own cable view uses. PCIE SW 1-8 get their own single row,
-                no longer paired one-per-retimer. */}
+            {/* Center: Retimer BD — the 8 GXR3 retimer cards are labeled/ordered by their own
+                position (0-7, matching physical left-to-right order across the two OSFP BDs), not
+                by the IOU they happen to be wired to — a retimer's identity is its own slot, not a
+                borrowed IOU number. Clicking one reveals a cable-link tag naming its actual IOU
+                (kept as a real, unrenumbered physical reference), same pairing the GBB Tray's own
+                cable view uses. PCIE SW 1-8 get their own single row, no longer paired
+                one-per-retimer. */}
             <div style={{ backgroundImage: 'radial-gradient(circle at 3.5px 3.5px, rgba(200,220,50,0.08) 0.6px, transparent 0.6px), repeating-linear-gradient(90deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 7px), linear-gradient(180deg, #22280f 0%, #161a08 100%)', backgroundSize: '7px 7px, 7px 7px, 100% 100%', border: '1px solid #3e4a1a', borderRadius: '2px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 8px', boxShadow: 'inset 0 1px 0 rgba(200,220,50,0.04)' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px' }}>
                   {[1, 2, 3, 4, 5, 6, 7, 8].map((slot) => {
                     const iou = OSFP_SLOT_TO_IOU[slot];
+                    // The retimer's own position, 0-indexed — its display identity and report
+                    // label. Fault-matching/partId stay on retimer-${iou} (unchanged, real hardware
+                    // reports GXR3/retimer faults by IOU number, not by this positional index).
+                    const position = slot - 1;
                     const handleRetimerOrReportClick = reportMode
-                      ? () => onPartClick(`retimer-${iou}`, `Retimer ${iou}`)
+                      ? () => onPartClick(`retimer-${iou}`, `Retimer ${position}`)
                       : () => handleRetimerClick(slot);
                     return (
                       <div key={slot} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <GXR3VRetimer id={`retimer-${iou}`} name={`OSFP ${slot}`}
+                        <GXR3VRetimer id={`retimer-${iou}`} name={`Retimer ${position}`}
                           onClick={handleRetimerOrReportClick}
                           faulted={faults.retimerIds.includes(`retimer-${iou}`)} />
                         {expandedRetimerCable[slot] && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}
-                            title={`OSFP ${slot} <-> IOU ${iou}`}>
+                            title={`Retimer ${position} <-> IOU ${iou}`}>
                             <div style={{ flex: 1, height: 0, borderTop: '2px dotted #5a7ab0' }} />
                             <div style={{
                               fontFamily: "'JetBrains Mono', monospace", fontSize: '6px', fontWeight: 700,
@@ -368,11 +384,14 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: '2px' }}>
                   {[1, 2, 3, 4, 5, 6, 7, 8].map((switchNum) => {
                     const switchFaulted = (faults.pcieSwitchIds || []).includes(switchNum);
+                    // label/report text are display-only (0-indexed); id/partId/title's PCIE_SWn
+                    // stay on switchNum — title quotes hwdiag's own "hwdiag system fabric test
+                    // all" output field name (PCIE_SW1..PCIE_SW8) verbatim, same as IOU numbers.
                     return (
-                      <PCIeSwitch key={switchNum} id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum}`}
+                      <PCIeSwitch key={switchNum} id={`pcie-sw-${switchNum}`} label={`PCIE SW ${switchNum - 1}`}
                         faulted={switchFaulted}
                         title={`PCIE_SW${switchNum}${switchFaulted ? ' — FAILED' : ''}`}
-                        onClick={reportMode ? () => onPartClick(`pcie-sw-${switchNum}`, `PCIE SW ${switchNum}`) : undefined} />
+                        onClick={reportMode ? () => onPartClick(`pcie-sw-${switchNum}`, `PCIE SW ${switchNum - 1}`) : undefined} />
                     );
                   })}
                 </div>
@@ -398,17 +417,20 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
           <div style={categoryHeaderStyle('teal')}>PSU</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
+              {/* port.name (from server/src/data/serverData.js) is "PSU 1".."PSU 12" — displayed
+                  0-indexed by recomputing from port.id instead, so faulted/partId (both still
+                  keyed by the real 1-12 port.id) stay untouched. */}
               {topRow.map((port) => (
-                <PSUPort key={port.id} id={port.id} name={port.name} status={port.status}
+                <PSUPort key={port.id} id={port.id} name={`PSU ${parseInt(port.id.replace(/\D/g, ''), 10) - 1}`} status={port.status}
                   faulted={faults.psuPorts.includes(port.id)}
-                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10)}`) : undefined} />
+                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10) - 1}`) : undefined} />
               ))}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
               {bottomRow.map((port) => (
-                <PSUPort key={port.id} id={port.id} name={port.name} status={port.status}
+                <PSUPort key={port.id} id={port.id} name={`PSU ${parseInt(port.id.replace(/\D/g, ''), 10) - 1}`} status={port.status}
                   faulted={faults.psuPorts.includes(port.id)}
-                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10)}`) : undefined} />
+                  onClick={reportMode ? () => onPartClick(port.id, `PSU ${parseInt(port.id.replace(/\D/g, ''), 10) - 1}`) : undefined} />
               ))}
             </div>
           </div>
