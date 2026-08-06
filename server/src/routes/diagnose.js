@@ -480,12 +480,25 @@ function parseLionkingOSFPOutput(output) {
   return { faults, raw: output };
 }
 
+// lionking_OSFP.py always looks up and prints the unit's associated test fixture on its way to
+// checking OSFP links ("Fetching Fixture SN for JBOG: <SN>..." / "Fixture SN: <fixture SN>") —
+// confirmed on real hardware across multiple units (2624YW10B9 -> 2628YW10DV, 2631YW111J ->
+// 2628YW10BK). UPDATE_GXR3_FW's own script needs this same fixture SN, not the JBOG's own, to
+// successfully resolve a MAC via SFCS (real failure signature seen on both units above when run
+// with the JBOG SN instead: "Failed to get MAC from SFCS for SN: <JBOG SN>"). Deliberately matches
+// "Fixture SN:" only (not the earlier "Fetching Fixture SN for JBOG:" line, which has "for JBOG"
+// between "SN" and ":" and never reaches this pattern) so it only ever captures the resolved
+// fixture SN, never the JBOG SN quoted in that first line.
+const FIXTURE_SN_RE = /Fixture SN:\s*(\S+)/i;
+
 async function runLionkingOSFPCheck(serialNumber) {
   console.log(`[diagnose] running: /home/tester/lionking_OSFP.py ${serialNumber}`);
   const output = await localExec(`/home/tester/lionking_OSFP.py ${serialNumber}`, 30000);
   console.log('[diagnose] lionking_OSFP.py raw output:\n', output);
   const result = parseLionkingOSFPOutput(output);
   console.log('[diagnose] lionking_OSFP.py parsed faults:', JSON.stringify(result.faults));
+  const fixtureSnMatch = output.match(FIXTURE_SN_RE);
+  if (fixtureSnMatch) result.fixtureSn = fixtureSnMatch[1];
   return result;
 }
 
@@ -2018,9 +2031,21 @@ router.get('/', async (req, res) => {
         }
       }
 
+      // VERIFY_OSFP_LINKS (which always runs first — see MFG_COLLECTOR_TARGETED_CHECKS' own
+      // order) discovers this unit's associated test fixture as a side effect of its own lookup
+      // (see FIXTURE_SN_RE/runLionkingOSFPCheck) — UPDATE_GXR3_FW needs that same fixture SN, not
+      // effectiveSn's own JBOG SN, to resolve a MAC via SFCS (confirmed on real hardware: it fails
+      // every time otherwise). Falls back to effectiveSn if VERIFY_OSFP_LINKS's own run didn't
+      // yield one (e.g. its script errored before reaching that lookup) — no worse than before.
+      let discoveredFixtureSn = null;
       for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
         console.log(`[diagnose] running targeted check ${checkName} for ${effectiveSn}${nodeSuffix}`);
-        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, effectiveSn, fixtureLabelPrefix, node);
+        const targetSnForCheck = (checkName === 'UPDATE_GXR3_FW' && discoveredFixtureSn) ? discoveredFixtureSn : effectiveSn;
+        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, targetSnForCheck, fixtureLabelPrefix, node);
+        if (checkName === 'VERIFY_OSFP_LINKS' && stepResult.fixtureSn) {
+          discoveredFixtureSn = stepResult.fixtureSn;
+          console.log(`[diagnose] VERIFY_OSFP_LINKS discovered Fixture SN ${discoveredFixtureSn} for ${effectiveSn}${nodeSuffix} — UPDATE_GXR3_FW will use it`);
+        }
         // See the Step 1.5 adoptLiveChassisModel guard above — CHECK_POWER_ON's own live
         // product_name read must not switch the UUT's page based on the fixture's chassis type.
         if (!isFixturePass) adoptLiveChassisModel(stepResult);
