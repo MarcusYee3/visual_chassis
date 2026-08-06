@@ -36,6 +36,7 @@ const RESUME_LOADING_LABELS = {
   bypassPowerState: 'Re-running the targeted check (server reports powered off)…',
   bypassHostnicCheck: 'Re-running the targeted check (HOSTNIC reports down)…',
   continueToDefault: 'Running the default diagnostic chain…',
+  continueToUut: 'Running the normal diagnostic flow for the unit itself…',
 };
 
 const genericErrorStyle = {

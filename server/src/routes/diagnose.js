@@ -532,16 +532,13 @@ function parseGxr3FwUpdateCheck(output) {
 // -- same directory as eve_ip.pyc, not lionking_OSFP.py.
 const GXR3_UPDATE_CHECK_PATH = '/home/tester/WesleyH/GXR3_update_check';
 
-// checkOptions.fixtureSn (set only when the Jira ticket's description carries a "*Fixture SN:*"
-// field — see fetchJiraCheckInfo) takes priority over the entered/UUT serialNumber for this one
-// check specifically: some GXR3 FW update tickets are filed against the test fixture rather than
-// the unit itself, so the script needs the fixture's own SN piped in, not the UUT's. Falls back to
-// serialNumber whenever no Fixture SN field was present — every other caller (forceCheck, the
-// Step 3 unconditional sweep with no Jira link, etc.) is unaffected.
-async function runGxr3FwUpdateCheck(serialNumber, checkOptions = {}) {
-  const snToUse = checkOptions.fixtureSn || serialNumber;
-  console.log(`[diagnose] running: echo ${snToUse} | ${GXR3_UPDATE_CHECK_PATH}${checkOptions.fixtureSn ? ` (fixture SN ${snToUse}, not entered SN ${serialNumber})` : ''}`);
-  const output = await localExec(`echo ${snToUse} | ${GXR3_UPDATE_CHECK_PATH}`, 30000);
+// serialNumber here is whatever the caller is currently targeting — the real UUT on a normal
+// request, or the Fixture SN during the fixture pre-pass (see isFixturePass/effectiveSn in the
+// main route handler below), which now covers what a narrower checkOptions.fixtureSn override
+// used to handle just for this one check.
+async function runGxr3FwUpdateCheck(serialNumber) {
+  console.log(`[diagnose] running: echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`);
+  const output = await localExec(`echo ${serialNumber} | ${GXR3_UPDATE_CHECK_PATH}`, 30000);
   console.log('[diagnose] gxr3_fw_update_check raw output:\n', output);
   const result = parseGxr3FwUpdateCheck(output);
   console.log('[diagnose] gxr3_fw_update_check parsed faults:', JSON.stringify(result.faults));
@@ -1280,11 +1277,12 @@ async function fetchJiraCheckInfo(jiraLink) {
   // by describeJiraFlow below to route E5-2c/E6-2c units to their own chassis layout page instead
   // of the default B300 visualizer.
   const model = descriptionFields.get('Model') || '';
-  // Some UPDATE_GXR3_FW tickets are filed against a test fixture rather than the unit itself —
-  // when present, runGxr3FwUpdateCheck pipes this SN in instead of the entered/UUT serialNumber
-  // (see checkOptions.fixtureSn below). Empty string (not present, same as every other field here)
-  // whenever this ticket has no such field, which is the common case — the check then falls back
-  // to its normal serialNumber-based behavior untouched.
+  // When present, the main route handler runs the full normal command flow (eve_ip -> Open_Problems
+  // -> fmadm -> hwdiag -> every targeted check) against this fixture unit BEFORE the entered/UUT
+  // serialNumber (see isFixturePass/effectiveSn below) — some tickets, especially UPDATE_GXR3_FW
+  // ones, are filed against a test fixture rather than the unit itself. Empty string (not present,
+  // same as every other field here) whenever this ticket has no such field, which is the common
+  // case — the request then proceeds exactly as if fixtureSn didn't exist.
   const fixtureSn = descriptionFields.get('Fixture SN') || '';
   // The technician's own diagnostic transcript (e.g. an ILOM/hwdiag session pasted while
   // documenting the fault) can live either in the ticket's comments, or directly in the
@@ -1507,7 +1505,10 @@ router.get('/precheck', async (req, res) => {
 });
 
 router.get('/', async (req, res) => {
-  const { serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState, bypassHostnicCheck, continueToDefault } = req.query;
+  const {
+    serialNumber, ilomIp: ilomIpParam, skipCollector, forceCheck, jiraLink, bypassPowerState, bypassHostnicCheck,
+    continueToDefault, continueToUut,
+  } = req.query;
   if (!serialNumber) return res.status(400).json({ error: 'serialNumber query param required' });
 
   if (!/^[a-zA-Z0-9]+$/.test(serialNumber)) {
@@ -1549,9 +1550,8 @@ router.get('/', async (req, res) => {
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
   // ?bypassPowerState=1 / ?bypassHostnicCheck=1 let the user skip runPowerOnCheck's own /SYS
-  // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. fixtureSn (added
-  // below, once jiraFlow is known) is read only by runGxr3FwUpdateCheck. Passed unconditionally to
-  // every targeted check below — a check that doesn't recognize a given key simply ignores it.
+  // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. Passed unconditionally
+  // to every targeted check below — a check that doesn't recognize a given key simply ignores it.
   const checkOptions = {
     bypassPowerState: bypassPowerState === '1' || bypassPowerState === 'true',
     bypassHostnicCheck: bypassHostnicCheck === '1' || bypassHostnicCheck === 'true',
@@ -1570,15 +1570,19 @@ router.get('/', async (req, res) => {
   // is labeled and fault-tagged by node here. Omitted (the vast majority of calls — the targeted-
   // check short-circuit branch and the forceCheck path both call this with no explicitNode at
   // all), this behaves exactly as before: plain checkName label, untagged faults.
-  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null) => {
-    const label = explicitNode ? `${explicitNode.label} ${checkName}` : checkName;
+  // targetSn/labelPrefix let a caller run this against a different unit than the entered
+  // serialNumber (see the Fixture SN pre-pass further below) without duplicating this function —
+  // both default to today's exact behavior, so the forceCheck/targetedCheckName short-circuit
+  // callers (which never pass either) are completely unaffected.
+  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null, targetSn = serialNumber, labelPrefix = '') => {
+    const label = `${labelPrefix}${explicitNode ? `${explicitNode.label} ${checkName}` : checkName}`;
     try {
-      const result = await targetedCheck(serialNumber, checkOptions, explicitNode);
+      const result = await targetedCheck(targetSn, checkOptions, explicitNode);
       const faults = explicitNode ? tagFaultsWithNode(result.faults, explicitNode) : result.faults;
       sendPartial(label, faults, result.raw);
       return result;
     } catch (err) {
-      console.error(`[diagnose] targeted check ${checkName} failed for ${serialNumber}:`, err.message);
+      console.error(`[diagnose] targeted check ${checkName} failed for ${targetSn}:`, err.message);
       const rawFaults = { ...emptyFaults, genericErrors: [`${checkName} check failed: ${err.message}`] };
       const faults = explicitNode ? tagFaultsWithNode(rawFaults, explicitNode) : rawFaults;
       sendPartial(label, faults, err.message);
@@ -1648,14 +1652,6 @@ router.get('/', async (req, res) => {
     let {
       notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
-    // Only ever set when the Jira ticket's description actually carried a "*Fixture SN:*" field —
-    // runGxr3FwUpdateCheck uses this in place of serialNumber for UPDATE_GXR3_FW specifically
-    // (both the short-circuit match below and the Step 3 unconditional sweep read the same
-    // checkOptions object), and every other targeted check ignores it entirely.
-    if (jiraFlow?.fixtureSn) {
-      checkOptions.fixtureSn = jiraFlow.fixtureSn;
-      console.log(`[diagnose] Jira ticket carries a Fixture SN (${jiraFlow.fixtureSn}) — UPDATE_GXR3_FW will use it instead of the entered SN (${serialNumber})`);
-    }
     // Seeded from describeJiraFlow (describeDefaultFlow has no Model field to read, since
     // mfg-collector's JBOG table doesn't carry one) but reassigned below (`let`, not `const`)
     // whenever CHECK_POWER_ON actually runs and reads the live "show /SYS" product_name — that's
@@ -1685,11 +1681,32 @@ router.get('/', async (req, res) => {
       sendDone({ source: defaultFlowSourceTag, chassisModel, isE5E6Chassis });
       return res.end();
     }
+    // A Fixture SN takes priority over everything below: run the full normal command flow (eve_ip
+    // -> Open_Problems -> fmadm -> hwdiag -> every targeted check) against the FIXTURE first, then
+    // ask whether to also run it for the UUT itself — same resumeParam pattern as
+    // continueToDefault above, just gating the fixture-vs-UUT choice instead of
+    // targeted-check-vs-default-chain. ?continueToUut=1 is how the client re-requests after
+    // answering "yes" to that prompt; at that point isFixturePass is false and everything below
+    // proceeds exactly as if fixtureSn didn't exist. effectiveSn (used everywhere below in place
+    // of serialNumber for eve_ip and every targeted-check call) is the fixture's SN during that
+    // first pass, the real UUT serialNumber on every other request.
+    const isFixturePass = !!jiraFlow?.fixtureSn && !(continueToUut === '1' || continueToUut === 'true');
+    const effectiveSn = isFixturePass ? jiraFlow.fixtureSn : serialNumber;
+    const fixtureLabelPrefix = isFixturePass ? `FIXTURE ${effectiveSn}: ` : '';
+    if (isFixturePass) {
+      console.log(`[diagnose] Jira ticket carries a Fixture SN (${effectiveSn}) — running the full normal command flow against it before ${serialNumber} itself`);
+    }
     // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
     // confirm prompt below — skips straight past the targeted-check short-circuit into the
     // default chain (which unconditionally re-sweeps every targeted check in Step 3 anyway, so
-    // there's no need to run it again here first).
-    const skipTargetedCheck = continueToDefault === '1' || continueToDefault === 'true';
+    // there's no need to run it again here first). isFixturePass also forces this, since a Fixture
+    // SN pre-pass is specifically about the *normal command flow*, not a single targeted check —
+    // skippedViaContinueToDefault (not the combined skipTargetedCheck) gates the
+    // defaultFlowNotice/defaultFlowSourceTag rewrite further below, so the fixture pass doesn't
+    // misreport itself as "the user confirmed running the full chain" when no such confirm ever
+    // happened for it.
+    const skippedViaContinueToDefault = continueToDefault === '1' || continueToDefault === 'true';
+    const skipTargetedCheck = skippedViaContinueToDefault || isFixturePass;
     if (targetedCheckName && !skipTargetedCheck) {
       console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
       const targetedResult = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
@@ -1747,31 +1764,51 @@ router.get('/', async (req, res) => {
     // eve_ip can also return *two* nodes for a chassis that physically hosts two independent
     // server nodes (see parseEveIpNodes) — isMultiNode branches into its own handling below;
     // everything in the single-node branch is byte-for-byte the same as before this existed.
-    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${serialNumber}`);
+    // effectiveSn is the Fixture SN during the fixture pre-pass (see isFixturePass above), the
+    // real UUT serialNumber on every other request.
+    const eveOut = await localExec(`python3 /home/tester/WesleyH/eve_ip.pyc ${effectiveSn}`);
     console.log('[diagnose] eve_ip raw output:\n', eveOut);
     const eveNodes = parseEveIpNodes(eveOut);
     const isMultiNode = eveNodes.length > 1;
     if (isMultiNode) {
-      console.log(`[diagnose] eve_ip: ${serialNumber} is a dual-node chassis (${eveNodes.map((n) => `${n.label}=${n.nodeSn}`).join(', ')})`);
+      console.log(`[diagnose] eve_ip: ${effectiveSn} is a dual-node chassis (${eveNodes.map((n) => `${n.label}=${n.nodeSn}`).join(', ')})`);
     }
+
+    // A lookup failure for the FIXTURE (unreachable/down ILOM, no eve_ip row at all) must not
+    // abort the whole request — the user still needs the chance to say "continue to the UUT
+    // anyway" below. Only a failure for the real UUT (isFixturePass false) is genuinely fatal, same
+    // as always. Returns true when the caller should stop (res.end() immediately after a real
+    // sendFatal); false means it degraded to a partial and the flow should carry on toward the
+    // fixture-vs-UUT confirm at the end with reachableNodes left empty.
+    const failEveIpLookup = (message) => {
+      if (isFixturePass) {
+        sendPartial(`${fixtureLabelPrefix}eve_ip`, { ...emptyFaults, genericErrors: [message] }, eveOut);
+        return false;
+      }
+      sendFatal(message);
+      return true;
+    };
 
     let reachableNodes;
     if (!isMultiNode) {
       const node = eveNodes[0];
       if (!node.ilomIp) {
-        console.log(`[diagnose] eve_ip: no ILOM row matched for ${serialNumber} — sending fatal`);
-        sendFatal(`No ILOM interface found for ${serialNumber} in eve_ip output: ${eveOut.trim()}`);
-        return res.end();
+        console.log(`[diagnose] eve_ip: no ILOM row matched for ${effectiveSn}`);
+        if (failEveIpLookup(`No ILOM interface found for ${effectiveSn} in eve_ip output: ${eveOut.trim()}`)) return res.end();
+        reachableNodes = [];
+      } else if (!/^up$/i.test(node.ilomStatus)) {
+        console.log(`[diagnose] eve_ip: ILOM status "${node.ilomStatus}" is not up for ${effectiveSn}`);
+        if (failEveIpLookup(`ILOM for ${effectiveSn} is reported ${node.ilomStatus.toUpperCase()} (IP ${node.ilomIp}) by eve_ip — cannot run diagnostics until it is back up`)) return res.end();
+        reachableNodes = [];
+      } else {
+        console.log(`[diagnose] eve_ip: ILOM row matched — IP ${node.ilomIp}, status "${node.ilomStatus}"`);
+        // ilomIpParam comes from /validate-sn, which only ever resolves the entered/UUT
+        // serialNumber's own IP — applying it during the fixture pass would silently point the
+        // fixture's session at the UUT's ILOM instead.
+        if (ilomIpParam && !isFixturePass) node.ilomIp = ilomIpParam;
+        console.log('[diagnose] ILOM IP:', node.ilomIp, (ilomIpParam && !isFixturePass) ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
+        reachableNodes = [node];
       }
-      console.log(`[diagnose] eve_ip: ILOM row matched — IP ${node.ilomIp}, status "${node.ilomStatus}"`);
-      if (!/^up$/i.test(node.ilomStatus)) {
-        console.log(`[diagnose] eve_ip: ILOM status "${node.ilomStatus}" is not up — sending fatal, skipping the SSH chain entirely`);
-        sendFatal(`ILOM for ${serialNumber} is reported ${node.ilomStatus.toUpperCase()} (IP ${node.ilomIp}) by eve_ip — cannot run diagnostics until it is back up`);
-        return res.end();
-      }
-      if (ilomIpParam) node.ilomIp = ilomIpParam;
-      console.log('[diagnose] ILOM IP:', node.ilomIp, ilomIpParam ? '(from validation, confirmed up via eve_ip)' : '(from eve_ip)');
-      reachableNodes = [node];
     } else {
       // An unreachable node is reported as its own partial rather than aborting a node that IS
       // reachable — a dual-node chassis where only one node is actually down still deserves full
@@ -1780,20 +1817,19 @@ router.get('/', async (req, res) => {
       reachableNodes = [];
       for (const node of eveNodes) {
         if (!node.ilomIp) {
-          console.log(`[diagnose] eve_ip: no ${node.label} row matched for ${serialNumber}`);
-          sendPartial(node.label, { ...emptyFaults, genericErrors: [`No ${node.label} interface found for ${serialNumber} (node ${node.nodeSn}) in eve_ip output`] }, eveOut);
+          console.log(`[diagnose] eve_ip: no ${node.label} row matched for ${effectiveSn}`);
+          sendPartial(`${fixtureLabelPrefix}${node.label}`, { ...emptyFaults, genericErrors: [`No ${node.label} interface found for ${effectiveSn} (node ${node.nodeSn}) in eve_ip output`] }, eveOut);
           continue;
         }
         if (!/^up$/i.test(node.ilomStatus)) {
           console.log(`[diagnose] eve_ip: ${node.label} status "${node.ilomStatus}" is not up — skipping this node`);
-          sendPartial(node.label, { ...emptyFaults, genericErrors: [`${node.label} (node ${node.nodeSn}) is reported ${node.ilomStatus.toUpperCase()} — skipping diagnostics for this node until it is back up`] }, eveOut);
+          sendPartial(`${fixtureLabelPrefix}${node.label}`, { ...emptyFaults, genericErrors: [`${node.label} (node ${node.nodeSn}) is reported ${node.ilomStatus.toUpperCase()} — skipping diagnostics for this node until it is back up`] }, eveOut);
           continue;
         }
         reachableNodes.push(node);
       }
       if (reachableNodes.length === 0) {
-        sendFatal(`No reachable ILOM found for ${serialNumber} across ${eveNodes.length} nodes in eve_ip output: ${eveOut.trim()}`);
-        return res.end();
+        if (failEveIpLookup(`No reachable ILOM found for ${effectiveSn} across ${eveNodes.length} nodes in eve_ip output: ${eveOut.trim()}`)) return res.end();
       }
     }
 
@@ -1808,7 +1844,7 @@ router.get('/', async (req, res) => {
     // node/ILOM a finding came from once there's more than one to distinguish.
     const runDefaultChainForNode = async (node) => {
       const ilomIp = node.ilomIp;
-      const tagLabel = (label) => (isMultiNode ? `${node.label} ${label}` : label);
+      const tagLabel = (label) => `${fixtureLabelPrefix}${isMultiNode ? `${node.label} ${label}` : label}`;
       const tagFaults = (faults) => (isMultiNode ? tagFaultsWithNode(faults, node) : faults);
       const nodeSuffix = isMultiNode ? ` (${node.label})` : '';
 
@@ -1827,14 +1863,17 @@ router.get('/', async (req, res) => {
           { line: 'exit', delayAfterMs: 1500 },
         ], ilomIp, ilomUser, ilomPassword, 20000);
         const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
-        if (productNameMatch) {
+        // Never adopt the FIXTURE's own chassis type — it's a different physical unit that may
+        // well be a different chassis model than the UUT, and chassisModel/isE5E6Chassis drives
+        // which page the client renders (B300 vs E5-2c/E6-2c) for the UUT currently on screen.
+        if (productNameMatch && !isFixturePass) {
           adoptLiveChassisModel({
             chassisModel: productNameMatch[1].trim(),
             isE5E6Chassis: E5_E6_MODEL_RE.test(productNameMatch[1].trim()),
           });
         }
       } catch (err) {
-        console.error(`[diagnose] chassis identification (show /SYS) failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        console.error(`[diagnose] chassis identification (show /SYS) failed for ${effectiveSn}${nodeSuffix}:`, err.message);
       }
 
       // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
@@ -1873,7 +1912,7 @@ router.get('/', async (req, res) => {
         if (openProblemsParsed.fanCapacityAlert) fanCapacityAlertPending = true;
         sendPartial(tagLabel('Open_Problems'), tagFaults(openProblemsParsed.faults), ilomOut);
       } catch (err) {
-        console.error(`[diagnose] Open_Problems check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        console.error(`[diagnose] Open_Problems check failed for ${effectiveSn}${nodeSuffix}:`, err.message);
         sendPartial(tagLabel('Open_Problems'), tagFaults({ ...emptyFaults, genericErrors: [`Open_Problems check failed: ${err.message}`] }), err.message);
       }
 
@@ -1890,7 +1929,7 @@ router.get('/', async (req, res) => {
       // buffer that also contains the hwdiag temp/fan dumps previously caused every PSU listed
       // in "hwdiag temp get all" (regardless of its actual reading) to be misreported as
       // faulted, instead of only the ones genuinely at 0.00 deg C.
-      console.log(`[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally, for ${serialNumber}${nodeSuffix}`);
+      console.log(`[diagnose] running fmadm faulty -a / hwdiag io config / hwdiag fan info / hwdiag temp get all / hwdiag system fabric test all / every targeted check, unconditionally, for ${effectiveSn}${nodeSuffix}`);
 
       try {
         const fmadmOut = await runIlomSession([
@@ -1904,7 +1943,7 @@ router.get('/', async (req, res) => {
         if (fmadmParsed.fanCapacityAlert) fanCapacityAlertPending = true;
         sendPartial(tagLabel('fmadm'), tagFaults(fmadmParsed.faults), fmadmOut);
       } catch (err) {
-        console.error(`[diagnose] fmadm check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        console.error(`[diagnose] fmadm check failed for ${effectiveSn}${nodeSuffix}:`, err.message);
         sendPartial(tagLabel('fmadm'), tagFaults({ ...emptyFaults, genericErrors: [`fmadm check failed: ${err.message}`] }), err.message);
       }
 
@@ -1948,7 +1987,7 @@ router.get('/', async (req, res) => {
         console.log('[diagnose] hwdiag fabric test parsed faults:', JSON.stringify(fabricParsed.faults));
         sendPartial(tagLabel('hwdiag system fabric test all'), tagFaults(fabricParsed.faults), hwdiagOut);
       } catch (err) {
-        console.error(`[diagnose] hwdiag check failed for ${serialNumber}${nodeSuffix}:`, err.message);
+        console.error(`[diagnose] hwdiag check failed for ${effectiveSn}${nodeSuffix}:`, err.message);
         sendPartial(tagLabel('hwdiag'), tagFaults({ ...emptyFaults, genericErrors: [`hwdiag check failed: ${err.message}`] }), err.message);
       }
 
@@ -1956,7 +1995,7 @@ router.get('/', async (req, res) => {
       // presence result (or lack of one) is known.
       if (fanCapacityAlertPending) {
         if (isNormalReducedFanChassis(hwdiagOut)) {
-          console.log(`[diagnose] fan-capacity alert suppressed for ${serialNumber}${nodeSuffix} — confirmed 2U chassis with FM0/FM1/FM2/PS0/PS1 all present`);
+          console.log(`[diagnose] fan-capacity alert suppressed for ${effectiveSn}${nodeSuffix} — confirmed 2U chassis with FM0/FM1/FM2/PS0/PS1 all present`);
         } else {
           sendPartial(
             tagLabel('fan-capacity-check'),
@@ -1967,9 +2006,11 @@ router.get('/', async (req, res) => {
       }
 
       for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
-        console.log(`[diagnose] running targeted check ${checkName} for ${serialNumber}${nodeSuffix}`);
-        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null);
-        adoptLiveChassisModel(stepResult);
+        console.log(`[diagnose] running targeted check ${checkName} for ${effectiveSn}${nodeSuffix}`);
+        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, effectiveSn, fixtureLabelPrefix);
+        // See the Step 1.5 adoptLiveChassisModel guard above — CHECK_POWER_ON's own live
+        // product_name read must not switch the UUT's page based on the fixture's chassis type.
+        if (!isFixturePass) adoptLiveChassisModel(stepResult);
       }
     };
 
@@ -1981,6 +2022,19 @@ router.get('/', async (req, res) => {
     // risk on Node's single-threaded event loop), and adoptLiveChassisModel's shared chassisModel/
     // isE5E6Chassis guard is idempotent no matter which node's "show /SYS" read resolves first.
     await Promise.all(reachableNodes.map((node) => runDefaultChainForNode(node)));
+
+    // The fixture pass never reaches a real {type:'done'} — it ends in a confirm instead, asking
+    // whether to also run this same normal command flow for the UUT itself. Answering "yes"
+    // re-requests with ?continueToUut=1, at which point isFixturePass is false and this whole
+    // handler runs again for the real serialNumber, ending in the sendDone below exactly as any
+    // other request does.
+    if (isFixturePass) {
+      sendConfirm(
+        `Finished running the normal diagnostic flow against Fixture ${effectiveSn}. Continue to also run it for ${serialNumber} itself?`,
+        'continueToUut'
+      );
+      return res.end();
+    }
 
     sendDone({
       // defaultFlowNotice is a status update ("running the default chain because X"), not a
