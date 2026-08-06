@@ -777,9 +777,9 @@ async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) 
   // Set when the user answers "yes" to the router's "keep running the targeted check?" confirm
   // prompt (see gateParam on the returned object below).
   const sysOut = await runIlomSession([
-    { line: 'show /SYS', delayAfterMs: 3000 },
-    { line: 'exit', delayAfterMs: 1500 },
-  ], ilomIp, ilomUser, ilomPassword, 20000);
+    { line: 'show /SYS', delayAfterMs: 1500 },
+    { line: 'exit', delayAfterMs: 750 },
+  ], ilomIp, ilomUser, ilomPassword, 10000);
   console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
   // "show /SYS" -> Properties also prints "product_name = ORACLE SERVER E6-2c" (confirmed real
   // hardware, SN 2631YW103X, 2026-07-29) — this is the live, always-available signal for routing
@@ -805,12 +805,12 @@ async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) 
   }
 
   const powerOut = await runIlomSession([
-    { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
-    { line: 'hwdiag power get amps all', delayAfterMs: 8000 },
-    { line: 'hwdiag power get volts all', delayAfterMs: 8000 },
-    { line: 'exit', delayAfterMs: 1500 },
-    { line: 'exit', delayAfterMs: 1500 },
-  ], ilomIp, ilomUser, ilomPassword, 45000);
+    { line: 'start -script /SP/diag/shell', delayAfterMs: 1000 },
+    { line: 'hwdiag power get amps all', delayAfterMs: 4000 },
+    { line: 'hwdiag power get volts all', delayAfterMs: 4000 },
+    { line: 'exit', delayAfterMs: 750 },
+    { line: 'exit', delayAfterMs: 750 },
+  ], ilomIp, ilomUser, ilomPassword, 22500);
   console.log('[diagnose] POWER_ON check raw output:\n', powerOut);
 
   const result = parseHwdiagPowerFaults(powerOut);
@@ -1563,21 +1563,30 @@ router.get('/', async (req, res) => {
   // actually found anything (see hasRealFinding below) and whether it stopped at a bypassable gate
   // (runPowerOnCheck's own power_state/HOSTNIC checks set gateParam when they do).
   // explicitNode is passed only from within the default chain's own per-node loop (see
-  // runDefaultChainForNode further below), for a dual-node chassis (see parseEveIpNodes) — it's
-  // forwarded straight through to the targeted check itself (runPowerOnCheck/runHostnicCheck
-  // understand it; the others just ignore the extra argument) so it reuses that loop's own eve_ip
-  // read instead of the check re-deriving its own node(s) from scratch, and the resulting partial
-  // is labeled and fault-tagged by node here. Omitted (the vast majority of calls — the targeted-
-  // check short-circuit branch and the forceCheck path both call this with no explicitNode at
-  // all), this behaves exactly as before: plain checkName label, untagged faults.
+  // runDefaultChainForNode further below), and only for a genuinely multi-node chassis (see
+  // parseEveIpNodes) — it makes the resulting partial's label/faults tagged by node (see
+  // tagFaultsWithNode). Omitted (the vast majority of calls — the targeted-check short-circuit
+  // branch, the forceCheck path, and every single-node chassis's Step 3 sweep all call this with no
+  // explicitNode), this behaves exactly as before: plain checkName label, untagged faults. See
+  // reuseNode below for the separate, node-count-independent eve_ip-reuse concern.
   // targetSn/labelPrefix let a caller run this against a different unit than the entered
   // serialNumber (see the Fixture SN pre-pass further below) without duplicating this function —
   // both default to today's exact behavior, so the forceCheck/targetedCheckName short-circuit
   // callers (which never pass either) are completely unaffected.
-  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null, targetSn = serialNumber, labelPrefix = '') => {
+  //
+  // explicitNode vs reuseNode: explicitNode only controls per-node LABEL/fault tagging (must stay
+  // null for a single-node chassis — tagFaultsWithNode is a genuinely multi-node-only concept, see
+  // its own comment). reuseNode is the node data actually handed to the targeted check so it skips
+  // its own eve_ip.pyc call — defaulting it to explicitNode preserves today's exact behavior for
+  // every existing caller, but the default chain's Step 3 sweep below passes reuseNode explicitly
+  // (the resolved node, always) even on a single-node chassis, since Step 1 already paid for that
+  // exact same eve_ip lookup moments earlier; re-deriving it again per targeted check was pure
+  // waste (confirmed harmless to skip since runPowerOnCheck/runHostnicCheck only ever gate on
+  // whether a node was already given, never on how many nodes the chassis has).
+  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null, targetSn = serialNumber, labelPrefix = '', reuseNode = explicitNode) => {
     const label = `${labelPrefix}${explicitNode ? `${explicitNode.label} ${checkName}` : checkName}`;
     try {
-      const result = await targetedCheck(targetSn, checkOptions, explicitNode);
+      const result = await targetedCheck(targetSn, checkOptions, reuseNode);
       const faults = explicitNode ? tagFaultsWithNode(result.faults, explicitNode) : result.faults;
       sendPartial(label, faults, result.raw);
       return result;
@@ -1859,9 +1868,9 @@ router.get('/', async (req, res) => {
       // it doesn't abort the rest of the chain.
       try {
         const identOut = await runIlomSession([
-          { line: 'show /SYS', delayAfterMs: 3000 },
-          { line: 'exit', delayAfterMs: 1500 },
-        ], ilomIp, ilomUser, ilomPassword, 20000);
+          { line: 'show /SYS', delayAfterMs: 1500 },
+          { line: 'exit', delayAfterMs: 750 },
+        ], ilomIp, ilomUser, ilomPassword, 10000);
         const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
         // Never adopt the FIXTURE's own chassis type — it's a different physical unit that may
         // well be a different chassis model than the UUT, and chassisModel/isE5E6Chassis drives
@@ -1901,10 +1910,10 @@ router.get('/', async (req, res) => {
       try {
         const ilomOut = await runIlomSession(
           [
-            { line: 'show /System/Open_Problems', delayAfterMs: 5000 },
-            { line: 'exit', delayAfterMs: 1500 },
+            { line: 'show /System/Open_Problems', delayAfterMs: 2500 },
+            { line: 'exit', delayAfterMs: 750 },
           ],
-          ilomIp, ilomUser, ilomPassword, 30000
+          ilomIp, ilomUser, ilomPassword, 15000
         );
         console.log(`[diagnose] ILOM raw output${nodeSuffix}:\n`, ilomOut);
         const openProblemsParsed = parseIlomProblems(ilomOut);
@@ -1933,10 +1942,10 @@ router.get('/', async (req, res) => {
 
       try {
         const fmadmOut = await runIlomSession([
-          { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 2000 },
-          { line: 'fmadm faulty -a', delayAfterMs: 10000 },
-          { line: 'exit', delayAfterMs: 1500 },
-        ], ilomIp, ilomUser, ilomPassword, 45000);
+          { line: 'start -script /SP/faultmgmt/shell', delayAfterMs: 1000 },
+          { line: 'fmadm faulty -a', delayAfterMs: 5000 },
+          { line: 'exit', delayAfterMs: 750 },
+        ], ilomIp, ilomUser, ilomPassword, 22500);
         console.log('[diagnose] fmadm raw output:\n', fmadmOut);
         const fmadmParsed = parseIlomProblems(fmadmOut);
         console.log('[diagnose] fmadm parsed faults:', JSON.stringify(fmadmParsed.faults));
@@ -1949,29 +1958,33 @@ router.get('/', async (req, res) => {
 
       try {
         hwdiagOut = await runIlomSession([
-          { line: 'start -script /SP/diag/shell', delayAfterMs: 2000 },
+          { line: 'start -script /SP/diag/shell', delayAfterMs: 1000 },
           // Run first, before fan/temp/fabric — its own "hwdiag_io_cables" cross-check (GI
           // reference wiring vs. what's actually connected) is what catches a swapped IOU PCIe/
           // power cable, the same class of fault previously only visible via a technician's
           // pasted session in a Jira ticket (see parseHwdiagIoCableFaults). No real-hardware
-          // timing confirmation yet for this one, so 8000ms is a starting estimate — bump it if
-          // it turns out to get cut off the same way "hwdiag temp get all" did below before its
-          // delay was corrected.
-          { line: 'hwdiag io config', delayAfterMs: 8000 },
-          { line: 'hwdiag fan info', delayAfterMs: 5000 },
-          // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed
-          // on real hardware to still be mid-output when the old 5000ms delay elapsed — the
-          // trailing "exit" landed while the diag shell was still busy and cut the sensor table
-          // off entirely (only the header printed before the connection closed).
-          { line: 'hwdiag temp get all', delayAfterMs: 15000 },
+          // timing confirmation yet for this one, so 4000ms is a starting estimate (halved from
+          // the original 8000ms estimate) — bump it if it turns out to get cut off the same way
+          // "hwdiag temp get all" did below before its delay was corrected.
+          { line: 'hwdiag io config', delayAfterMs: 4000 },
+          { line: 'hwdiag fan info', delayAfterMs: 2500 },
+          // "hwdiag temp get all" prints ~70 sensor lines (vs. fan info's ~7) and was observed on
+          // real hardware to still be mid-output when the old 5000ms delay elapsed — the trailing
+          // "exit" landed while the diag shell was still busy and cut the sensor table off
+          // entirely (only the header printed before the connection closed); 15000ms was the
+          // confirmed fix. This is now halved to 7500ms per a deliberate latency-vs-safety-margin
+          // tradeoff — still above the confirmed-broken 5000ms, but NOT independently confirmed
+          // safe against real hardware the way 15000ms was. Re-verify against a real unit; bump
+          // back toward 15000ms if this command's output gets truncated again.
+          { line: 'hwdiag temp get all', delayAfterMs: 7500 },
           // "hwdiag system fabric test all" actively trains/tests PCIe links, not just reading
           // cached values like the two commands above — no real-hardware timing confirmation for
-          // this one yet, so 20000ms is a conservative starting estimate; bump it if it turns out
-          // to get cut off the same way temp get all did.
-          { line: 'hwdiag system fabric test all', delayAfterMs: 20000 },
-          { line: 'exit', delayAfterMs: 1500 }, // leave the diag shell, back to top-level "->"
-          { line: 'exit', delayAfterMs: 1500 }, // log out of the top-level session
-        ], ilomIp, ilomUser, ilomPassword, 85000);
+          // this one yet, so 10000ms is a starting estimate (halved from the original 20000ms
+          // estimate); bump it if it turns out to get cut off the same way temp get all did.
+          { line: 'hwdiag system fabric test all', delayAfterMs: 10000 },
+          { line: 'exit', delayAfterMs: 750 }, // leave the diag shell, back to top-level "->"
+          { line: 'exit', delayAfterMs: 750 }, // log out of the top-level session
+        ], ilomIp, ilomUser, ilomPassword, 42500);
         console.log('[diagnose] hwdiag raw output:\n', hwdiagOut);
 
         const ioConfigParsed = parseHwdiagIoCableFaults(hwdiagOut);
@@ -2007,7 +2020,7 @@ router.get('/', async (req, res) => {
 
       for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
         console.log(`[diagnose] running targeted check ${checkName} for ${effectiveSn}${nodeSuffix}`);
-        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, effectiveSn, fixtureLabelPrefix);
+        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, effectiveSn, fixtureLabelPrefix, node);
         // See the Step 1.5 adoptLiveChassisModel guard above — CHECK_POWER_ON's own live
         // product_name read must not switch the UUT's page based on the fixture's chassis type.
         if (!isFixturePass) adoptLiveChassisModel(stepResult);
