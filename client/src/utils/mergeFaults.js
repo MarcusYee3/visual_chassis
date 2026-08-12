@@ -4,11 +4,11 @@
 // unioning each array field (deduped) rather than overwriting, since a unit can have more than one
 // real problem at once (e.g. a fabric-test PCIe failure *and* a GXR3 firmware failure).
 export function mergeFaultsClient(a, b) {
-  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
-  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set(), dimmIds: new Set() };
+  const merged = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const seen = { components: new Set(), psuPorts: new Set(), retimerIds: new Set(), e1sIds: new Set(), fanIds: new Set(), cableFaults: new Set(), cableEndFaults: new Set(), pcieFaults: new Set(), pcieSwitchIds: new Set(), dimmIds: new Set() };
   for (const f of [a, b]) {
     if (!f) continue;
-    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'cableEndFaults', 'pcieSwitchIds', 'dimmIds']) {
       for (const id of f[key] || []) {
         if (!seen[key].has(id)) { seen[key].add(id); merged[key].push(id); }
       }

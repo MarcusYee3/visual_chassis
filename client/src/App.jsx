@@ -9,7 +9,7 @@ import { updateServer, diagnoseServer, precheckDiagnose } from './services/api';
 import { getLoggableParts } from './utils/loggableParts';
 import { mergeFaultsClient } from './utils/mergeFaults';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 // Matches the Form/LogFailurePanel card language (dot-pattern background, subtle border, soft
 // shadow) instead of the bare unstyled <p> tags this used to be — those read as loose, uncontained

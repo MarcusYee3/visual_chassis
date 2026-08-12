@@ -5,7 +5,7 @@ import FanModule from '../components/FanModule/FanModule';
 import PSUPort from '../components/PSUPorts/PSUPort';
 import DimmModule from '../components/DimmModule/DimmModule';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 // Same palette/fault convention as ServerOverview.jsx (never red for a category — red is fault-only).
 const VIEW_COLORS = {

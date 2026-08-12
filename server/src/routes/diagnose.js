@@ -96,6 +96,7 @@ function parseIlomProblems(output) {
     fanIds: [],
     genericErrors: [],
     cableFaults: [],
+    cableEndFaults: [],
     pcieSwitchIds: [],
     dimmIds: [],
   };
@@ -253,7 +254,7 @@ const REDUCED_CHASSIS_OPTIONAL_BAYS = new Set(['PS2', 'PS3']);
 // Anything whose status isn't exactly "Present" is treated as a fault, except PS2/PS3 reading
 // "Not Present" specifically on a 2U chassis (see REDUCED_CHASSIS_OPTIONAL_BAYS above).
 function parseHwdiagFanInfo(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const fanSeen = new Set();
@@ -323,7 +324,7 @@ function isNormalReducedFanChassis(hwdiagOut) {
 // (/SYS/PS<n>/...), route it through the existing PSU highlighting; anything else becomes a
 // generic error message with no specific chassis component to highlight.
 function parseHwdiagTempGetAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -375,7 +376,7 @@ function parseHwdiagTempGetAll(output) {
 // IOU numbers. No real-hardware evidence yet of what a systemic/all-failed case looks like in
 // this format, so the "reseat head node" heuristic only applies to format A for now.
 function parseHwdiagFabricTestAll(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const switchFailures = new Map(); // switch number -> [ 'Retimer8', 'GPU7', ... ] (which lines failed)
@@ -457,7 +458,7 @@ const OSFP_SLOT_TO_IOU = { 1: 6, 2: 1, 3: 7, 4: 2, 5: 9, 6: 4, 7: 10, 8: 5 };
 const OSFP_CABLE_SLOT_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]];
 
 function parseLionkingOSFPOutput(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
   if (!/Missing \/ Down Links/i.test(output) && /error|traceback|exception/i.test(output)) {
     faults.genericErrors.push(`lionking_OSFP.py did not complete normally: ${output.trim().slice(-500)}`);
@@ -475,6 +476,15 @@ function parseLionkingOSFPOutput(output) {
     const id = `cable-${OSFP_SLOT_TO_IOU[slotA]}-${OSFP_SLOT_TO_IOU[slotB]}`;
     if (!cableSeen.has(id)) { cableSeen.add(id); faults.cableFaults.push(id); }
   }
+  // cableFaults above is cable-pairing-level ("this cable has a problem somewhere") — kept as-is
+  // since that's what the Part Failure Log reports against. cableEndFaults is the finer-grained
+  // sibling: which specific IOU end(s) the script actually named as down, straight from downSlots
+  // (already exactly this information, just not previously exposed past the cable-pairing check).
+  // Lets the chassis UI highlight only the reported-down OSFP module and its own half of the
+  // loopback connector — a real down-link report can name only ONE end of a pair (the other end's
+  // own port may be fine; a single connector can fail without taking the whole physical cable with
+  // it), so treating both ends as equally faulted was misleading.
+  for (const slot of downSlots) faults.cableEndFaults.push(OSFP_SLOT_TO_IOU[slot]);
   if (faults.cableFaults.length > 0) faults.components.push('gbb');
 
   return { faults, raw: output };
@@ -511,7 +521,7 @@ async function runLionkingOSFPCheck(serialNumber) {
 // use), which is what the retimer UI is keyed by (retimer-<iou>) — unlike "hwdiag system fabric
 // test all"'s switch-relative RetimerN, there's no ambiguity here about which physical card failed.
 function parseGxr3FwUpdateCheck(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const retimerSeen = new Set();
@@ -571,7 +581,7 @@ async function runGxr3FwUpdateCheck(serialNumber) {
 // PSU reading exactly 0 for either amps or volts means it isn't actually delivering power, even
 // if "hwdiag fan info" still reports it "Present".
 function parseHwdiagPowerFaults(output) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const psuSeen = new Set();
@@ -670,7 +680,7 @@ function parseEveIpNodes(eveOut) {
 // each call site's own isMultiNode/explicitNode guard), so its output is completely unaffected.
 function tagFaultsWithNode(faults, node) {
   const nodeTag = `${node.label}${node.nodeSn ? ` (node ${node.nodeSn})` : ''}`;
-  const hasStructured = ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'pcieFaults', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']
+  const hasStructured = ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'pcieFaults', 'fanIds', 'cableFaults', 'cableEndFaults', 'pcieSwitchIds', 'dimmIds']
     .some((key) => (faults[key] || []).length > 0);
   const genericErrors = (faults.genericErrors || []).map((msg) => `[${nodeTag}] ${msg}`);
   if (hasStructured) {
@@ -687,13 +697,13 @@ function tagFaultsWithNode(faults, node) {
 // chassisModel takes the last node that reported one (both nodes are physically the same chassis
 // model, so this is only ever a redundant confirmation, not a real conflict).
 function mergeNodeResults(results) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   let raw = '';
   let gateParam = null;
   let chassisModel = null;
   let isE5E6Chassis = false;
   for (const r of results) {
-    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'pcieSwitchIds', 'dimmIds']) {
+    for (const key of ['components', 'psuPorts', 'retimerIds', 'e1sIds', 'fanIds', 'cableFaults', 'cableEndFaults', 'pcieSwitchIds', 'dimmIds']) {
       faults[key].push(...(r.faults[key] || []));
     }
     faults.pcieFaults.push(...(r.faults.pcieFaults || []));
@@ -719,7 +729,7 @@ function mergeNodeResults(results) {
 // node(s) from scratch exactly as before — and if that reveals more than one node on its own, it
 // runs this same procedure against each and merges+tags the results itself.
 async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) {
-  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   let rawPrefix = '';
 
   if (!explicitNode) {
@@ -846,7 +856,7 @@ async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) 
 // its own to bypass) but kept in the signature so runAndReportCheck can call every targeted check
 // the same uniform way.
 async function runHostnicCheck(serialNumber, options = {}, explicitNode = null) {
-  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   let rawPrefix = '';
 
   if (!explicitNode) {
@@ -1076,7 +1086,7 @@ function extractJiraCheckCodes(summary) {
 // becomes a generic error naming the cable and the bay/module mismatch; 'iob' is highlighted
 // since these cables live on the IOB tray's retimer board.
 function parseHwdiagIoCableFaults(text) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
 
@@ -1116,7 +1126,7 @@ function parseHwdiagIoCableFaults(text) {
 // per hwdiag_io_config sub-check), so dedupe by bay number the same way
 // parseIouFruPositionFaults does for repeated IOU mentions.
 function parseHwdiagIoConfigBayFaults(text) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   const reportedBays = new Set();
@@ -1168,7 +1178,7 @@ const PART_MENTION_RE = /\b(pcie|psu|dimm|iou|fan|fm|fs|ps|d)[\s#-]{0,2}(\d{1,3}
 // otherwise also produce for the same part+number (e.g. skip "IOU6" here once the FRU-mismatch
 // parser has already explained exactly what's wrong with IOU6).
 function parseGenericPartMentions(text, excludeTokens = new Set()) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const seen = new Set();
   let m;
   while ((m = PART_MENTION_RE.exec(text)) !== null) {
@@ -1195,7 +1205,7 @@ function parseGenericPartMentions(text, excludeTokens = new Set()) {
 // firmware/cable action, so the message says so directly rather than the vaguer "verify against
 // live diagnostics" wording parseGenericPartMentions uses for a bare, unconfirmed number mention.
 function parseIouFruPositionFaults(text) {
-  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const faults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   const compSet = new Set();
   const addComp = (c) => { if (!compSet.has(c)) { compSet.add(c); faults.components.push(c); } };
   // Handed back to the caller so it can tell parseGenericPartMentions to skip re-mentioning these
@@ -1561,7 +1571,7 @@ router.get('/', async (req, res) => {
   const sendFatal = (error) => res.write(`${JSON.stringify({ type: 'fatal', error })}\n`);
   const sendConfirm = (message, resumeParam) => res.write(`${JSON.stringify({ type: 'confirm', message, resumeParam })}\n`);
   const sendDone = (extra) => res.write(`${JSON.stringify({ type: 'done', ...extra })}\n`);
-  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+  const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   // ?bypassPowerState=1 / ?bypassHostnicCheck=1 let the user skip runPowerOnCheck's own /SYS
   // power_state / HOSTNIC gates and get the hwdiag power-rail reading anyway. Passed unconditionally
   // to every targeted check below — a check that doesn't recognize a given key simply ignores it.
@@ -1623,7 +1633,7 @@ router.get('/', async (req, res) => {
   // fall through too (the message itself is still kept — see sendPartial in runAndReportCheck).
   const hasRealFinding = (f) => !!f && [
     'components', 'psuPorts', 'retimerIds', 'e1sIds', 'pcieFaults', 'fanIds',
-    'cableFaults', 'pcieSwitchIds', 'dimmIds',
+    'cableFaults', 'cableEndFaults', 'pcieSwitchIds', 'dimmIds',
   ].some((key) => (f[key] || []).length > 0);
 
   try {

@@ -10,7 +10,7 @@ import DimmModule from '../components/DimmModule/DimmModule';
 import { useServerData } from '../hooks/useServerData';
 import { getOSFPModules, getPSUPorts } from '../services/api';
 
-const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], pcieSwitchIds: [], dimmIds: [] };
+const EMPTY_FAULTS = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
 
 // One color per category of raw part, used for that category's section header below — never red,
 // since red is reserved exclusively for fault highlighting (see faultGlow/faultBorder) and a
@@ -193,30 +193,42 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                   {bd.pairs.map(([slotA, slotB]) => {
                     const iouA = OSFP_SLOT_TO_IOU[slotA];
                     const iouB = OSFP_SLOT_TO_IOU[slotB];
+                    // cableFaults (cable-pairing-level, "this cable has a problem somewhere") stays
+                    // the coarse indicator for the label/overall tooltip below. cableEndFaults is
+                    // the finer-grained sibling VERIFY_OSFP_LINKS actually reports — specifically
+                    // which IOU end(s) were named down — since a real report can name only ONE end
+                    // of a pair (the other port may be fine), treating both ends as equally faulted
+                    // was misleading. endAFaulted/endBFaulted drive per-end module highlighting and
+                    // per-half connector coloring below.
                     const cableFaulted = (faults.cableFaults || []).includes(`cable-${iouA}-${iouB}`);
-                    const cableColor = cableFaulted ? '#ff4444' : '#5a7ab0';
+                    const endAFaulted = (faults.cableEndFaults || []).includes(iouA);
+                    const endBFaulted = (faults.cableEndFaults || []).includes(iouB);
                     // Same plug-and-dotted-line look as the Motherboard cable and the OSFP<->IOU
                     // reveal below, so the physical loopback cable between a pair's two OSFP
                     // modules actually reads as a cable instead of just a text label.
-                    const cablePlugStyle = {
+                    const cablePlugStyle = (faulted) => ({
                       width: '3px', height: '10px', borderRadius: '1px', flexShrink: 0,
                       background: 'linear-gradient(180deg, #222 0%, #1a1a1a 100%)',
-                      border: `1px solid ${cableColor}`,
-                      boxShadow: cableFaulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
-                    };
+                      border: `1px solid ${faulted ? '#ff4444' : '#5a7ab0'}`,
+                      boxShadow: faulted ? faultGlow : 'inset 0 0 3px rgba(0,0,0,0.6)',
+                    });
+                    const cableHalfLineStyle = (faulted) => ({
+                      flex: 1, height: 0, borderTop: `2px dotted ${faulted ? '#ff4444' : '#5a7ab0'}`,
+                      filter: faulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
+                    });
                     // Renders slotA, the connector, and slotB as three independent siblings
                     // (rather than nesting the connector inside slotB's own flex:1 wrapper) so
                     // both modules get an identical width share — nesting it inside slotB's
                     // wrapper previously ate into that module's own space, rendering it visibly
                     // narrower than slotA's.
-                    const renderModule = (slot) => {
+                    const renderModule = (slot, endFaulted) => {
                       const iou = OSFP_SLOT_TO_IOU[slot];
                       const port = allOsfpPorts[slot - 1];
-                      // A cable fault (VERIFY_OSFP_LINKS finding a down loopback link between two
-                      // OSFP modules) is a fault on the cable itself, not on either module it
-                      // connects — only a genuine pcieFault against this specific IOU lights up the
-                      // module; the cable fault is rendered exclusively on the connector below.
-                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou);
+                      // A genuine pcieFault against this specific IOU lights up the module, same as
+                      // before — now joined by endFaulted (this exact end named down by
+                      // VERIFY_OSFP_LINKS), so only the reported-down side of a cable pair
+                      // highlights, not both.
+                      const hasFault = (faults.pcieFaults || []).some((f) => f.iou === iou) || endFaulted;
                       // A stable id independent of whether allOsfpPorts has loaded yet — used for
                       // report mode (rather than port?.id, which no whole-OSFP-module fault ever
                       // targets anyway; only cable-/pcie-level sub-faults do).
@@ -244,20 +256,22 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
                         </div>
                       );
                     };
+                    const endLabel = endAFaulted && endBFaulted ? ' — DOWN both ends'
+                      : endAFaulted ? ` — OSFP ${slotA} end DOWN`
+                      : endBFaulted ? ` — OSFP ${slotB} end DOWN`
+                      : '';
                     return (
                       <div key={`${slotA}-${slotB}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start' }}>
-                          {renderModule(slotA)}
+                          {renderModule(slotA, endAFaulted)}
                           <div style={{ display: 'flex', alignItems: 'center', width: '18px', flexShrink: 0, marginTop: '16px' }}
-                            title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${cableFaulted ? ' — DOWN' : ''}`}>
-                            <div style={cablePlugStyle} />
-                            <div style={{
-                              flex: 1, height: 0, borderTop: `2px dotted ${cableColor}`,
-                              filter: cableFaulted ? 'drop-shadow(0 0 3px rgba(255,68,68,0.7))' : 'none',
-                            }} />
-                            <div style={cablePlugStyle} />
+                            title={`Loopback cable: OSFP ${slotA} <-> OSFP ${slotB}${endLabel}`}>
+                            <div style={cablePlugStyle(endAFaulted)} />
+                            <div style={cableHalfLineStyle(endAFaulted)} />
+                            <div style={cableHalfLineStyle(endBFaulted)} />
+                            <div style={cablePlugStyle(endBFaulted)} />
                           </div>
-                          {renderModule(slotB)}
+                          {renderModule(slotB, endBFaulted)}
                         </div>
                         <div style={{
                           fontFamily: "'JetBrains Mono', monospace", fontSize: '8px', fontWeight: 700,
