@@ -1329,6 +1329,16 @@ async function fetchJiraCheckInfo(jiraLink) {
   // text these two parsers should ever see.
   const iouFruResult = parseIouFruPositionFaults(failureMessage);
   const mentionsResult = parseGenericPartMentions(failureMessage, iouFruResult.matchedTokens);
+  // VERIFY_OSFP_LINKS (lionking_OSFP.py) only reports link status meaningfully when it's genuinely
+  // the check being investigated — see the Step 3 sweep's own suppression of a routine, unrelated
+  // sweep-run. targetedCheckName's own checkCodes match (extractJiraCheckCodes) only ever scans
+  // summary+failedTestcase for a "<N>_<CHECKNAME>" code, which misses a real ticket confirmed to
+  // name the failing testcase only inside the Failure Message field (e.g. "test
+  // 9_VERIFY_OSFP_LINKS failed" under *Failure Message:*, with *Failed Testcase:* itself set to an
+  // unrelated code like CHECK_CX_DATA) — scanning all four fields here, matching the same "search
+  // everywhere a ticket might phrase it" approach already used for POWER_ON below, so that ticket's
+  // genuine VERIFY_OSFP_LINKS finding isn't suppressed again the same way it was before.
+  const mentionsVerifyOsfpLinks = [summary, failedTestcase, failureMessage, commentsText].some((s) => /VERIFY_OSFP_LINKS/i.test(s));
   return {
     key: data.key || jiraLink,
     summary,
@@ -1336,6 +1346,7 @@ async function fetchJiraCheckInfo(jiraLink) {
     failureMessage,
     model,
     fixtureSn,
+    mentionsVerifyOsfpLinks,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
@@ -1409,7 +1420,7 @@ async function describeJiraFlow(jiraLink) {
       targetedCheckName: null,
       resolvedFaults: info.cableFaults,
       resolvedRaw: info.commentsText,
-      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
     };
   }
 
@@ -1419,12 +1430,12 @@ async function describeJiraFlow(jiraLink) {
   // description's Failed Testcase/Failure Message fields, and the comments directly so none of
   // those shapes get missed.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn };
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn };
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -1433,14 +1444,14 @@ async function describeJiraFlow(jiraLink) {
         `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
       sourceTag: 'jira-no-targeted-flow',
       targetedCheckName: null,
-      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
     };
   }
   return {
     notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
     sourceTag: 'jira-no-check-code',
     targetedCheckName: null,
-    chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn,
+    chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
   };
 }
 
@@ -1728,6 +1739,14 @@ router.get('/', async (req, res) => {
     if (isFixturePass) {
       console.log(`[diagnose] Jira ticket carries a Fixture SN (${effectiveSn}) — running the full normal command flow against it before ${serialNumber} itself`);
     }
+    // VERIFY_OSFP_LINKS's loopback check isn't reliable outside its own investigated context — see
+    // the Step 3 sweep's own suppression, gated on this. True when the ticket's own failure
+    // genuinely names VERIFY_OSFP_LINKS, via either signal: the narrower checkCodes-based match
+    // (targetedCheckName, from summary/failedTestcase only) or the broader raw-text scan across
+    // every field a ticket might phrase it in (jiraFlow.mentionsVerifyOsfpLinks — see
+    // fetchJiraCheckInfo). Also true with no Jira link at all whenever mfg-collector's own table
+    // names VERIFY_OSFP_LINKS as the failing check (still covered by the targetedCheckName half).
+    const isVerifyOsfpLinksFailure = targetedCheckName === 'VERIFY_OSFP_LINKS' || !!jiraFlow?.mentionsVerifyOsfpLinks;
     // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
     // confirm prompt below — skips straight past the targeted-check short-circuit into the
     // default chain (which unconditionally re-sweeps every targeted check in Step 3 anyway, so
@@ -2051,6 +2070,29 @@ router.get('/', async (req, res) => {
       for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
         console.log(`[diagnose] running targeted check ${checkName} for ${effectiveSn}${nodeSuffix}`);
         const targetSnForCheck = (checkName === 'UPDATE_GXR3_FW' && discoveredFixtureSn) ? discoveredFixtureSn : effectiveSn;
+
+        // VERIFY_OSFP_LINKS (lionking_OSFP.py) only reports link status meaningfully when it's
+        // actually the check being investigated — run it unconditionally here like every other
+        // check anyway, for completeness/timing and because UPDATE_GXR3_FW needs its fixtureSn
+        // discovery below regardless of suppression, but don't surface a cable/link fault from it
+        // into the fault log/chassis highlight unless isVerifyOsfpLinksFailure is genuinely true.
+        // Otherwise a routine sweep-run of an unreliable-outside-its-own-context check could get
+        // highlighted as a real, current cable failure. Called directly (not via
+        // runAndReportCheck) specifically to skip its automatic sendPartial.
+        if (checkName === 'VERIFY_OSFP_LINKS' && !isVerifyOsfpLinksFailure) {
+          try {
+            const result = await targetedCheck(targetSnForCheck, checkOptions, node);
+            if (result.fixtureSn) {
+              discoveredFixtureSn = result.fixtureSn;
+              console.log(`[diagnose] VERIFY_OSFP_LINKS discovered Fixture SN ${discoveredFixtureSn} for ${effectiveSn}${nodeSuffix} — UPDATE_GXR3_FW will use it`);
+            }
+            console.log(`[diagnose] VERIFY_OSFP_LINKS ran during the unconditional sweep for ${effectiveSn}${nodeSuffix} (not the ticket's own failure) — suppressing its result:`, JSON.stringify(result.faults));
+          } catch (err) {
+            console.error(`[diagnose] VERIFY_OSFP_LINKS failed during the unconditional sweep for ${effectiveSn}${nodeSuffix} (suppressed, not the ticket's own failure):`, err.message);
+          }
+          continue;
+        }
+
         const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, targetSnForCheck, fixtureLabelPrefix, node);
         if (checkName === 'VERIFY_OSFP_LINKS' && stepResult.fixtureSn) {
           discoveredFixtureSn = stepResult.fixtureSn;
