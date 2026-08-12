@@ -728,7 +728,14 @@ function mergeNodeResults(results) {
 // collector/Jira targeted-check short-circuit, or ?forceCheck=CHECK_POWER_ON) it resolves its own
 // node(s) from scratch exactly as before — and if that reveals more than one node on its own, it
 // runs this same procedure against each and merges+tags the results itself.
-async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) {
+//
+// explicitSysOut is the same idea applied to "show /SYS": the default chain's own Step 1.5
+// already reads it (for chassis-ID detection) moments before this check runs in the same node's
+// Step 3 sweep — passing that raw output through here skips this function's own otherwise-
+// identical "show /SYS" session entirely (same node, same command, same point in the flow). Falls
+// back to fetching it fresh whenever explicitSysOut isn't given (every non-sweep caller, or if
+// Step 1.5's own read failed) — behaves exactly as before in both of those cases.
+async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null, explicitSysOut = null) {
   const emptyFaults = { components: [], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [], genericErrors: [], cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [] };
   let rawPrefix = '';
 
@@ -799,11 +806,17 @@ async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) 
   // hasn't caught up yet, or wants the rail readings regardless of what /SYS currently reports.
   // Set when the user answers "yes" to the router's "keep running the targeted check?" confirm
   // prompt (see gateParam on the returned object below).
-  const sysOut = await runIlomSession([
-    { line: 'show /SYS', delayAfterMs: 1500 },
-    { line: 'exit', delayAfterMs: 750 },
-  ], ilomIp, ilomUser, ilomPassword, 10000);
-  console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
+  let sysOut;
+  if (explicitSysOut) {
+    sysOut = explicitSysOut;
+    console.log('[diagnose] POWER_ON check reusing "show /SYS" already read by Step 1.5 — skipping a redundant session');
+  } else {
+    sysOut = await runIlomSession([
+      { line: 'show /SYS', delayAfterMs: 1500 },
+      { line: 'exit', delayAfterMs: 750 },
+    ], ilomIp, ilomUser, ilomPassword, 10000);
+    console.log('[diagnose] POWER_ON check /SYS output:\n', sysOut);
+  }
   // "show /SYS" -> Properties also prints "product_name = ORACLE SERVER E6-2c" (confirmed real
   // hardware, SN 2631YW103X, 2026-07-29) — this is the live, always-available signal for routing
   // to the E5-2c/E6-2c chassis page, unlike the Jira "Model" field (E5_E6_MODEL_RE further below),
@@ -1625,10 +1638,13 @@ router.get('/', async (req, res) => {
   // exact same eve_ip lookup moments earlier; re-deriving it again per targeted check was pure
   // waste (confirmed harmless to skip since runPowerOnCheck/runHostnicCheck only ever gate on
   // whether a node was already given, never on how many nodes the chassis has).
-  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null, targetSn = serialNumber, labelPrefix = '', reuseNode = explicitNode) => {
+  // extraArg is a single positional passthrough for a check-specific reuse value (currently only
+  // runPowerOnCheck's explicitSysOut — see its own comment) — every targeted check besides the one
+  // that understands it simply ignores the trailing argument, same convention as checkOptions.
+  const runAndReportCheck = async (checkName, targetedCheck, explicitNode = null, targetSn = serialNumber, labelPrefix = '', reuseNode = explicitNode, extraArg = undefined) => {
     const label = `${labelPrefix}${explicitNode ? `${explicitNode.label} ${checkName}` : checkName}`;
     try {
-      const result = await targetedCheck(targetSn, checkOptions, reuseNode);
+      const result = await targetedCheck(targetSn, checkOptions, reuseNode, extraArg);
       const faults = explicitNode ? tagFaultsWithNode(result.faults, explicitNode) : result.faults;
       sendPartial(label, faults, result.raw);
       return result;
@@ -1921,11 +1937,22 @@ router.get('/', async (req, res) => {
       // the same class of bug. Kept deliberately minimal (just this one read) and non-fatal: a
       // failure here just means the chassis type stays whatever Jira already said (or unknown),
       // it doesn't abort the rest of the chain.
+      //
+      // sysOutFromStep1_5 captures this read's raw output so CHECK_POWER_ON's own Step 3 sweep
+      // call can reuse it (see runPowerOnCheck's explicitSysOut) instead of opening a second,
+      // fully redundant "show /SYS" session for the exact same node moments later — safe to share
+      // since runPowerOnCheck only ever re-parses it with its own targeted product_name/
+      // power_state regexes, never runs it through parseIlomProblems or any other broader fault
+      // scanner (the actual concern the parser-isolation convention above guards against). Stays
+      // null on failure, which simply makes runPowerOnCheck fall back to fetching its own fresh
+      // copy — no worse than before this existed.
+      let sysOutFromStep1_5 = null;
       try {
         const identOut = await runIlomSession([
           { line: 'show /SYS', delayAfterMs: 1500 },
           { line: 'exit', delayAfterMs: 750 },
         ], ilomIp, ilomUser, ilomPassword, 10000);
+        sysOutFromStep1_5 = identOut;
         const productNameMatch = identOut.match(/product_name\s*=\s*(.+)/i);
         // Never adopt the FIXTURE's own chassis type — it's a different physical unit that may
         // well be a different chassis model than the UUT, and chassisModel/isE5E6Chassis drives
@@ -2121,7 +2148,10 @@ router.get('/', async (req, res) => {
           continue;
         }
 
-        const stepResult = await runAndReportCheck(checkName, targetedCheck, isMultiNode ? node : null, targetSnForCheck, fixtureLabelPrefix, node);
+        const stepResult = await runAndReportCheck(
+          checkName, targetedCheck, isMultiNode ? node : null, targetSnForCheck, fixtureLabelPrefix, node,
+          checkName === 'CHECK_POWER_ON' ? sysOutFromStep1_5 : undefined
+        );
         if (checkName === 'VERIFY_OSFP_LINKS' && stepResult.fixtureSn) {
           discoveredFixtureSn = stepResult.fixtureSn;
           console.log(`[diagnose] VERIFY_OSFP_LINKS discovered Fixture SN ${discoveredFixtureSn} for ${effectiveSn}${nodeSuffix} — UPDATE_GXR3_FW will use it`);
