@@ -847,9 +847,11 @@ async function runPowerOnCheck(serialNumber, options = {}, explicitNode = null) 
 // HOSTNIC directly via eve_ip and prompt to check the DAC cable if it's down. This is the same
 // HOSTNIC check already folded into runPowerOnCheck above, as its own standalone targeted flow —
 // covers a ticket that names UPDATE_HOSTNIC_FW_REMOTE on its own, without also naming
-// CHECK_POWER_ON (which is the only other place this app currently checks HOSTNIC). Also means the
-// default chain's Step 3 sweep (which runs every entry in MFG_COLLECTOR_TARGETED_CHECKS
-// unconditionally) now checks HOSTNIC on every diagnosis, not just Jira-matched ones.
+// CHECK_POWER_ON (which is the only other place this app currently checks HOSTNIC). The default
+// chain's Step 3 sweep still runs this unconditionally like every other targeted check, but only
+// surfaces its result when isHostnicFwRemoteFailure (see the main route handler) is genuinely
+// true — a routine sweep-run against a ticket whose real failure is something else entirely is
+// suppressed, same reasoning as VERIFY_OSFP_LINKS's own suppression.
 //
 // explicitNode/options follow the exact same contract as runPowerOnCheck above — see its own
 // comment for the full explanation. options is otherwise unused here (this check has no gate of
@@ -1339,6 +1341,11 @@ async function fetchJiraCheckInfo(jiraLink) {
   // everywhere a ticket might phrase it" approach already used for POWER_ON below, so that ticket's
   // genuine VERIFY_OSFP_LINKS finding isn't suppressed again the same way it was before.
   const mentionsVerifyOsfpLinks = [summary, failedTestcase, failureMessage, commentsText].some((s) => /VERIFY_OSFP_LINKS/i.test(s));
+  // Same reasoning as mentionsVerifyOsfpLinks above, applied to UPDATE_HOSTNIC_FW_REMOTE — its own
+  // standalone check (runHostnicCheck, distinct from CHECK_POWER_ON's own separate, deliberately-
+  // unconditional internal HOSTNIC gate) shouldn't surface a HOSTNIC-down finding from a routine
+  // Step 3 sweep-run against a ticket whose real failure is something else entirely.
+  const mentionsHostnicFwRemote = [summary, failedTestcase, failureMessage, commentsText].some((s) => /UPDATE_HOSTNIC_FW_REMOTE/i.test(s));
   return {
     key: data.key || jiraLink,
     summary,
@@ -1347,6 +1354,7 @@ async function fetchJiraCheckInfo(jiraLink) {
     model,
     fixtureSn,
     mentionsVerifyOsfpLinks,
+    mentionsHostnicFwRemote,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
     checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
@@ -1420,7 +1428,7 @@ async function describeJiraFlow(jiraLink) {
       targetedCheckName: null,
       resolvedFaults: info.cableFaults,
       resolvedRaw: info.commentsText,
-      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
     };
   }
 
@@ -1430,12 +1438,12 @@ async function describeJiraFlow(jiraLink) {
   // description's Failed Testcase/Failure Message fields, and the comments directly so none of
   // those shapes get missed.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks };
+    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote };
   }
 
   const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
   if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks };
+    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -1444,14 +1452,14 @@ async function describeJiraFlow(jiraLink) {
         `${info.checkCodes.length > 1 ? 'these checks' : 'this check'} — running the default ILOM diagnostic chain instead…`,
       sourceTag: 'jira-no-targeted-flow',
       targetedCheckName: null,
-      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
     };
   }
   return {
     notice: `Jira ${info.key}: "${info.summary}" — no recognizable check code in the summary, running the default ILOM diagnostic chain…`,
     sourceTag: 'jira-no-check-code',
     targetedCheckName: null,
-    chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks,
+    chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
   };
 }
 
@@ -1747,6 +1755,11 @@ router.get('/', async (req, res) => {
     // fetchJiraCheckInfo). Also true with no Jira link at all whenever mfg-collector's own table
     // names VERIFY_OSFP_LINKS as the failing check (still covered by the targetedCheckName half).
     const isVerifyOsfpLinksFailure = targetedCheckName === 'VERIFY_OSFP_LINKS' || !!jiraFlow?.mentionsVerifyOsfpLinks;
+    // Same reasoning, applied to UPDATE_HOSTNIC_FW_REMOTE's own standalone check (runHostnicCheck)
+    // — distinct from CHECK_POWER_ON's separate, deliberately-unconditional internal HOSTNIC gate
+    // (checked as context for interpreting a PS0/PS1 reading, real-hardware-confirmed — untouched
+    // by this flag).
+    const isHostnicFwRemoteFailure = targetedCheckName === 'UPDATE_HOSTNIC_FW_REMOTE' || !!jiraFlow?.mentionsHostnicFwRemote;
     // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
     // confirm prompt below — skips straight past the targeted-check short-circuit into the
     // default chain (which unconditionally re-sweeps every targeted check in Step 3 anyway, so
@@ -2089,6 +2102,21 @@ router.get('/', async (req, res) => {
             console.log(`[diagnose] VERIFY_OSFP_LINKS ran during the unconditional sweep for ${effectiveSn}${nodeSuffix} (not the ticket's own failure) — suppressing its result:`, JSON.stringify(result.faults));
           } catch (err) {
             console.error(`[diagnose] VERIFY_OSFP_LINKS failed during the unconditional sweep for ${effectiveSn}${nodeSuffix} (suppressed, not the ticket's own failure):`, err.message);
+          }
+          continue;
+        }
+
+        // Same reasoning as VERIFY_OSFP_LINKS above, applied to UPDATE_HOSTNIC_FW_REMOTE's own
+        // standalone check — CHECK_POWER_ON's own separate internal HOSTNIC gate is untouched by
+        // this and stays unconditional (real-hardware-confirmed context for a PS0/PS1 reading).
+        // runHostnicCheck has no side-channel result another check depends on (unlike
+        // VERIFY_OSFP_LINKS's fixtureSn discovery), so this branch just skips it outright.
+        if (checkName === 'UPDATE_HOSTNIC_FW_REMOTE' && !isHostnicFwRemoteFailure) {
+          try {
+            const result = await targetedCheck(targetSnForCheck, checkOptions, node);
+            console.log(`[diagnose] UPDATE_HOSTNIC_FW_REMOTE ran during the unconditional sweep for ${effectiveSn}${nodeSuffix} (not the ticket's own failure) — suppressing its result:`, JSON.stringify(result.faults));
+          } catch (err) {
+            console.error(`[diagnose] UPDATE_HOSTNIC_FW_REMOTE failed during the unconditional sweep for ${effectiveSn}${nodeSuffix} (suppressed, not the ticket's own failure):`, err.message);
           }
           continue;
         }
