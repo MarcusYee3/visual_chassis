@@ -29,24 +29,9 @@ export const updateServer = async (serverId, updates) => {
   return handleResponse(response, 'Failed to update server');
 };
 
-export const getGBBTray = async (serverId) => {
-  const response = await fetch(`${API_BASE}/servers/${serverId}/gbb`);
-  return handleResponse(response, 'Failed to fetch GBB tray');
-};
-
 export const getOSFPModules = async (serverId) => {
   const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp`);
   return handleResponse(response, 'Failed to fetch OSFP modules');
-};
-
-export const getOSFPModule = async (serverId, osfpId) => {
-  const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}`);
-  return handleResponse(response, 'Failed to fetch OSFP module');
-};
-
-export const getPCIePorts = async (serverId, osfpId) => {
-  const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}/pcie`);
-  return handleResponse(response, 'Failed to fetch PCIe ports');
 };
 
 export const getPSUPorts = async (serverId) => {
@@ -146,13 +131,4 @@ export const deletePartFailures = async (ids) => {
     body: JSON.stringify({ ids }),
   });
   return handleResponse(response, 'Failed to delete part failure(s)');
-};
-
-export const updatePCIePort = async (serverId, osfpId, pcieId, status) => {
-  const response = await fetch(`${API_BASE}/servers/${serverId}/gbb/osfp/${osfpId}/pcie/${pcieId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  });
-  return handleResponse(response, 'Failed to update PCIe port');
 };
