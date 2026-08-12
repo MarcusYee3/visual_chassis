@@ -121,6 +121,19 @@ function App() {
     // logPanel's loggable parts, the "Faults detected" status text — can be computed the instant
     // the stream ends, against the complete picture, without waiting on an extra render cycle.
     let accumulated = EMPTY_FAULTS;
+    // Recomputes and republishes logPanel from whatever's accumulated so far — called after every
+    // partial (checkName/source omitted, since there's no terminal event yet to derive them from)
+    // and once more at the very end with the terminal event's authoritative checkName/source. The
+    // default chain can run well over a minute end-to-end; a technician shouldn't have to wait for
+    // the whole thing to finish before they can start logging a fault that was already found in
+    // the first few seconds. LogFailurePanel isn't given a `key` prop below, so updating logPanel
+    // mid-stream re-renders the same component instance with a longer `parts` array rather than
+    // remounting it — any part already marked LOGGED (its own internal statusByPart state) stays
+    // logged as more parts are appended around it.
+    const updateLogPanel = (checkName, source) => {
+      const parts = getLoggableParts(accumulated);
+      if (parts.length > 0) setLogPanel({ serialNumber: formData.sn, parts, checkName, source });
+    };
     // Every extra flag the user has agreed to so far (e.g. {bypassHostnicCheck: true}), resent on
     // every subsequent request — the server is stateless across requests, so a later request must
     // still carry every earlier confirm's answer, not just the newest one.
@@ -139,6 +152,7 @@ function App() {
           accumulated = mergeFaultsClient(accumulated, event.faults);
           setFaults(accumulated);
           setLoadingNotice(`Checking ${event.label}…`);
+          updateLogPanel(undefined, undefined);
         } else if (event.type === 'chassis') {
           // Not a terminal event — the stream keeps going after this. Applied the instant it
           // arrives (server sends it before any partial whenever possible) so the page switches to
@@ -200,11 +214,10 @@ function App() {
           ? 'No open problems detected.'
           : `Faults detected${via}: ${accumulated.components.length > 0 ? accumulated.components.join(', ') : 'see error below'}`);
 
-        const parts = getLoggableParts(accumulated);
-        if (parts.length > 0) {
-          const checkName = isCheckMatch ? terminalEvent.source.split(' -> ')[1] : undefined;
-          setLogPanel({ serialNumber: formData.sn, parts, checkName, source: terminalEvent.source });
-        }
+        // Same parts every partial already streamed in — this just upgrades checkName/source to
+        // the now-known terminal event's authoritative values (unavailable mid-stream).
+        const checkName = isCheckMatch ? terminalEvent.source.split(' -> ')[1] : undefined;
+        updateLogPanel(checkName, terminalEvent.source);
       }
     } catch (e) {
       setDiagnoseError(e.message || 'Diagnosis failed');
