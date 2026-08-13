@@ -1355,12 +1355,10 @@ async function fetchJiraCheckInfo(jiraLink) {
   const mentionsResult = parseGenericPartMentions(failureMessage, iouFruResult.matchedTokens);
   // VERIFY_OSFP_LINKS (lionking_OSFP.py) only reports link status meaningfully when it's genuinely
   // the check being investigated — see the Step 3 sweep's own suppression of a routine, unrelated
-  // sweep-run. targetedCheckName's own checkCodes match (extractJiraCheckCodes) only ever scans
-  // summary+failedTestcase for a "<N>_<CHECKNAME>" code, which misses a real ticket confirmed to
-  // name the failing testcase only inside the Failure Message field (e.g. "test
-  // 9_VERIFY_OSFP_LINKS failed" under *Failure Message:*, with *Failed Testcase:* itself set to an
-  // unrelated code like CHECK_CX_DATA) — scanning all four fields here, matching the same "search
-  // everywhere a ticket might phrase it" approach already used for POWER_ON below, so that ticket's
+  // sweep-run. checkCodes above now also scans failureMessage (not just summary+failedTestcase),
+  // but this is scanned separately and more broadly still (a bare "VERIFY_OSFP_LINKS" mention, not
+  // just the numbered "<N>_VERIFY_OSFP_LINKS" code shape, and comments too) — matching the same
+  // "search everywhere a ticket might phrase it" approach used for POWER_ON below, so that ticket's
   // genuine VERIFY_OSFP_LINKS finding isn't suppressed again the same way it was before.
   const mentionsVerifyOsfpLinks = [summary, failedTestcase, failureMessage, commentsText].some((s) => /VERIFY_OSFP_LINKS/i.test(s));
   // Same reasoning as mentionsVerifyOsfpLinks above, applied to UPDATE_HOSTNIC_FW_REMOTE — its own
@@ -1379,7 +1377,10 @@ async function fetchJiraCheckInfo(jiraLink) {
     mentionsHostnicFwRemote,
     // "Failed Testcase" is itself usually a "<N>_<CHECKNAME>" code (e.g. "11_POWER_ON") — scan it
     // alongside the summary, since some tickets only carry the code in one place or the other.
-    checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}`),
+    // Failure Message is scanned too — a real ticket confirmed to name the failing testcase only
+    // there (e.g. "test 9_VERIFY_OSFP_LINKS failed" under *Failure Message:*, with *Failed
+    // Testcase:* itself set to an unrelated code) would otherwise be missed entirely.
+    checkCodes: extractJiraCheckCodes(`${summary}\n${failedTestcase}\n${failureMessage}`),
     commentsText,
     // Merge every parser's hits into one faults object — describeJiraFlow below treats any
     // genericError here as "this ticket already documents a fault, skip the ILOM chain" regardless
@@ -1417,12 +1418,14 @@ const E5_E6_MODEL_RE = /E[56]-2C\b/i;
 
 // Returns null if no jiraLink was given, or if fetching/parsing it failed for any reason — in
 // both cases the caller falls through to the normal mfg-collector-cache-based describeDefaultFlow
-// below, same as if this feature didn't exist. Otherwise returns the same {notice, sourceTag,
-// targetedCheckName} shape describeDefaultFlow produces (plus an optional resolvedFaults/
-// resolvedRaw pair — see below), so both GET /precheck and the main GET / handler can treat a
-// Jira-derived decision identically to a mfg-collector one, just sourced from a higher-priority
-// place (a specific repair ticket rather than the live JBOG test table, which only ever covers
-// the small subset of units currently mid-manufacturing-test). Every branch also carries
+// below, same as if this feature didn't exist. Otherwise returns the same {notice, sourceTag}
+// shape describeDefaultFlow produces, plus a *plural* targetedCheckNames (describeDefaultFlow's
+// own targetedCheckName stays singular — mfg-collector's live table only ever has one Status per
+// SN) since a ticket can name more than one dedicated check at once, and an optional
+// resolvedFaults/resolvedRaw pair — see below — so both GET /precheck and the main GET / handler
+// can treat a Jira-derived decision identically to a mfg-collector one, just sourced from a higher-
+// priority place (a specific repair ticket rather than the live JBOG test table, which only ever
+// covers the small subset of units currently mid-manufacturing-test). Every branch also carries
 // chassisModel/isE5E6Chassis (see E5_E6_MODEL_RE above) since any of them can be the one that
 // actually reaches the client — the main GET / handler below surfaces these on {type:'done'} so
 // App.jsx knows which page component to render regardless of which branch decided the flow.
@@ -1471,18 +1474,31 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
+  // Collects *every* dedicated check this ticket names — not just the first one found — since a
+  // ticket can genuinely fail more than one check at once (e.g. both VERIFY_OSFP_LINKS and
+  // UPDATE_GXR3_FW), and each one deserves its own dedicated command chain run before asking
+  // whether to also run the default chain, same as when only one is named.
+  const targetedCheckNames = [];
   // "POWER_ON" (e.g. a "Failed Testcase: 11_POWER_ON" description field, or the
-  // HOST_POWER_ON_PRETEST stage) is matched by exact checkName below when it fits the numbered
-  // <N>_<CHECKNAME> shape, but not every ticket phrases it that way — scan the summary, the
-  // description's Failed Testcase/Failure Message fields, and the comments directly so none of
-  // those shapes get missed.
+  // HOST_POWER_ON_PRETEST stage) is matched by a loose phrase scan across all four fields, not just
+  // the numbered <N>_<CHECKNAME> shape below — not every ticket phrases it that way.
   if ([info.summary, info.failedTestcase, info.failureMessage, info.commentsText].some((s) => /POWER_ON/i.test(s))) {
-    return { notice: null, sourceTag: `jira ${info.key} -> CHECK_POWER_ON`, targetedCheckName: 'CHECK_POWER_ON', chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote };
+    targetedCheckNames.push('CHECK_POWER_ON');
   }
-
-  const targetedMatch = info.checkCodes.find((c) => MFG_COLLECTOR_TARGETED_CHECKS[c.checkName]);
-  if (targetedMatch) {
-    return { notice: null, sourceTag: `jira ${info.key} -> ${targetedMatch.checkName}`, targetedCheckName: targetedMatch.checkName, chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote };
+  // checkCodes (built above from summary+failedTestcase+failureMessage) covers every other
+  // dedicated check's own "<N>_<CHECKNAME>" code shape, wherever in those three fields it appears.
+  for (const { checkName } of info.checkCodes) {
+    if (MFG_COLLECTOR_TARGETED_CHECKS[checkName] && !targetedCheckNames.includes(checkName)) {
+      targetedCheckNames.push(checkName);
+    }
+  }
+  if (targetedCheckNames.length > 0) {
+    return {
+      notice: null,
+      sourceTag: `jira ${info.key} -> ${targetedCheckNames.join(', ')}`,
+      targetedCheckNames,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
+    };
   }
   if (info.checkCodes.length > 0) {
     const codeList = info.checkCodes.map((c) => `${c.checkNumber}_${c.checkName}`).join(', ');
@@ -1582,7 +1598,12 @@ router.get('/precheck', async (req, res) => {
   const flow = (await describeJiraFlow(jiraLink)) || describeDefaultFlow(serialNumber, skipCollector);
   // resolvedFaults/resolvedRaw (the Jira-ticket-comments case) aren't needed here — precheck only
   // reports status text, the real GET / below is what actually returns faults to the client.
-  res.json({ notice: flow.notice, sourceTag: flow.sourceTag, targetedCheckName: flow.targetedCheckName });
+  // targetedCheckNames (plural, Jira-only — a ticket can name more than one dedicated check at
+  // once) is joined into the same single display string describeDefaultFlow's own singular
+  // targetedCheckName already produces, so the client's loading notice doesn't need to know which
+  // shape it came from.
+  const targetedCheckName = flow.targetedCheckNames ? flow.targetedCheckNames.join(', ') : flow.targetedCheckName;
+  res.json({ notice: flow.notice, sourceTag: flow.sourceTag, targetedCheckName });
 });
 
 router.get('/', async (req, res) => {
@@ -1740,8 +1761,13 @@ router.get('/', async (req, res) => {
     console.log('[diagnose] mfg-collector cache lookup for', serialNumber, '(cache last updated', mfgCollectorCacheUpdatedAt, ')', jiraLink ? `— jiraLink also supplied: ${jiraLink}` : '');
     const jiraFlow = await describeJiraFlow(jiraLink);
     let {
-      notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, resolvedFaults, resolvedRaw,
+      notice: defaultFlowNotice, sourceTag: defaultFlowSourceTag, targetedCheckName, targetedCheckNames, resolvedFaults, resolvedRaw,
     } = jiraFlow || describeDefaultFlow(serialNumber, skipCollector);
+    // Normalizes describeJiraFlow's plural targetedCheckNames (a ticket can name more than one
+    // dedicated check at once) and describeDefaultFlow's singular targetedCheckName (mfg-collector's
+    // live table only ever has one Status per SN, so there's never more than one there) into the
+    // same shape for the run loop below.
+    targetedCheckNames = targetedCheckNames || (targetedCheckName ? [targetedCheckName] : []);
     // Seeded from describeJiraFlow (describeDefaultFlow has no Model field to read, since
     // mfg-collector's JBOG table doesn't carry one) but reassigned below (`let`, not `const`)
     // whenever CHECK_POWER_ON actually runs and reads the live "show /SYS" product_name — that's
@@ -1788,17 +1814,18 @@ router.get('/', async (req, res) => {
     }
     // VERIFY_OSFP_LINKS's loopback check isn't reliable outside its own investigated context — see
     // the Step 3 sweep's own suppression, gated on this. True when the ticket's own failure
-    // genuinely names VERIFY_OSFP_LINKS, via either signal: the narrower checkCodes-based match
-    // (targetedCheckName, from summary/failedTestcase only) or the broader raw-text scan across
-    // every field a ticket might phrase it in (jiraFlow.mentionsVerifyOsfpLinks — see
-    // fetchJiraCheckInfo). Also true with no Jira link at all whenever mfg-collector's own table
-    // names VERIFY_OSFP_LINKS as the failing check (still covered by the targetedCheckName half).
-    const isVerifyOsfpLinksFailure = targetedCheckName === 'VERIFY_OSFP_LINKS' || !!jiraFlow?.mentionsVerifyOsfpLinks;
+    // genuinely names VERIFY_OSFP_LINKS, via either signal: the checkCodes-based match
+    // (targetedCheckNames, from summary/failedTestcase/failureMessage) or the broader raw-text scan
+    // across every field a ticket might phrase it in, including comments
+    // (jiraFlow.mentionsVerifyOsfpLinks — see fetchJiraCheckInfo). Also true with no Jira link at
+    // all whenever mfg-collector's own table names VERIFY_OSFP_LINKS as the failing check (still
+    // covered by the targetedCheckNames half).
+    const isVerifyOsfpLinksFailure = targetedCheckNames.includes('VERIFY_OSFP_LINKS') || !!jiraFlow?.mentionsVerifyOsfpLinks;
     // Same reasoning, applied to UPDATE_HOSTNIC_FW_REMOTE's own standalone check (runHostnicCheck)
     // — distinct from CHECK_POWER_ON's separate, deliberately-unconditional internal HOSTNIC gate
     // (checked as context for interpreting a PS0/PS1 reading, real-hardware-confirmed — untouched
     // by this flag).
-    const isHostnicFwRemoteFailure = targetedCheckName === 'UPDATE_HOSTNIC_FW_REMOTE' || !!jiraFlow?.mentionsHostnicFwRemote;
+    const isHostnicFwRemoteFailure = targetedCheckNames.includes('UPDATE_HOSTNIC_FW_REMOTE') || !!jiraFlow?.mentionsHostnicFwRemote;
     // ?continueToDefault=1 is how the client re-requests after the user answers "yes" to the
     // confirm prompt below — skips straight past the targeted-check short-circuit into the
     // default chain (which unconditionally re-sweeps every targeted check in Step 3 anyway, so
@@ -1810,42 +1837,54 @@ router.get('/', async (req, res) => {
     // happened for it.
     const skippedViaContinueToDefault = continueToDefault === '1' || continueToDefault === 'true';
     const skipTargetedCheck = skippedViaContinueToDefault || isFixturePass;
-    if (targetedCheckName && !skipTargetedCheck) {
-      console.log(`[diagnose] ${defaultFlowSourceTag} — running its targeted check instead of the generic ILOM chain`);
-      const targetedResult = await runAndReportCheck(targetedCheckName, MFG_COLLECTOR_TARGETED_CHECKS[targetedCheckName]);
-      const targetedFaults = targetedResult.faults;
-      adoptLiveChassisModel(targetedResult);
+    if (targetedCheckNames.length > 0 && !skipTargetedCheck) {
+      console.log(`[diagnose] ${defaultFlowSourceTag} — running ${targetedCheckNames.length > 1 ? `its ${targetedCheckNames.length} dedicated command chains (${targetedCheckNames.join(', ')})` : 'its dedicated command chain'} instead of the generic ILOM chain`);
+      // Every named check runs in turn — a ticket can genuinely fail more than one dedicated check
+      // at once (e.g. both VERIFY_OSFP_LINKS and UPDATE_GXR3_FW), and each one deserves its own run
+      // before asking whether to also continue to the default chain, same as when only one is named.
+      const findingsByCheck = [];
+      for (const checkName of targetedCheckNames) {
+        const targetedResult = await runAndReportCheck(checkName, MFG_COLLECTOR_TARGETED_CHECKS[checkName]);
+        const targetedFaults = targetedResult.faults;
+        adoptLiveChassisModel(targetedResult);
 
-      // The check stopped at a bypassable gate (runPowerOnCheck's own power_state/HOSTNIC checks —
-      // see gateParam) without that bypass already being active. Ask specifically whether to keep
-      // running *this* targeted check past the gate, before considering the broader default chain
-      // at all — a "no" here just means stop, not "ask about the default chain instead" (see below,
-      // reached only when no gate was hit this time).
-      if (targetedResult.gateParam && !checkOptions[targetedResult.gateParam]) {
-        console.log(`[diagnose] ${targetedCheckName} stopped at a gate (${targetedResult.gateParam}) for ${serialNumber} — asking whether to keep running the targeted check`);
-        let gateNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} stopped early`;
-        if (!/[.?!]$/.test(gateNote)) gateNote += '.';
-        sendConfirm(`${gateNote} Keep running the targeted check anyway?`, targetedResult.gateParam);
-        return res.end();
+        // The check stopped at a bypassable gate (runPowerOnCheck's own power_state/HOSTNIC checks
+        // — see gateParam) without that bypass already being active. Ask specifically whether to
+        // keep running *this* check past the gate, before running any remaining checks in the list
+        // or considering the broader default chain at all — a "no" here just means stop, not "ask
+        // about the default chain instead". Any check already run this request keeps its
+        // already-sent partial; answering the gate re-requests with that bypass flag set, which
+        // re-runs this whole list from the start (harmless — every check here is idempotent) and
+        // this time sails past the gate.
+        if (targetedResult.gateParam && !checkOptions[targetedResult.gateParam]) {
+          console.log(`[diagnose] ${checkName} stopped at a gate (${targetedResult.gateParam}) for ${serialNumber} — asking whether to keep running the targeted check`);
+          let gateNote = (targetedFaults?.genericErrors || []).join(' ') || `${checkName} stopped early`;
+          if (!/[.?!]$/.test(gateNote)) gateNote += '.';
+          sendConfirm(`${gateNote} Keep running the targeted check anyway?`, targetedResult.gateParam);
+          return res.end();
+        }
+        findingsByCheck.push({ checkName, targetedFaults });
       }
 
-      // The targeted check ran to completion this time (found a real fault, found nothing, or ran
+      // Every named check ran to completion this time (found a real fault, found nothing, or ran
       // after a gate bypass) — in general, always ask whether to also continue to the default
-      // diagnostic chain, regardless of what this one check found, since any single targeted check
-      // only ever covers its own narrow slice (e.g. CHECK_POWER_ON never looks at fans/DIMMs/PCIe).
-      console.log(`[diagnose] ${targetedCheckName} finished for ${serialNumber} — asking whether to continue to the default ILOM diagnostic chain`);
+      // diagnostic chain, regardless of what these checks found, since even multiple targeted
+      // checks only ever cover their own narrow slices (none of them look at fans/DIMMs/PCIe the
+      // way the default chain's Open_Problems/fmadm/hwdiag do).
+      console.log(`[diagnose] ${targetedCheckNames.join(', ')} finished for ${serialNumber} — asking whether to continue to the default ILOM diagnostic chain`);
+      const withFindings = findingsByCheck.filter((f) => hasRealFinding(f.targetedFaults));
       let continueNote;
-      if (hasRealFinding(targetedFaults)) {
-        continueNote = `${targetedCheckName} found a fault (${(targetedFaults.components || []).join(', ') || 'see details above'}).`;
+      if (withFindings.length > 0) {
+        continueNote = `${withFindings.map((f) => `${f.checkName} found a fault (${(f.targetedFaults.components || []).join(', ') || 'see details above'})`).join('; ')}.`;
       } else {
-        continueNote = (targetedFaults?.genericErrors || []).join(' ') || `${targetedCheckName} found no fault`;
+        continueNote = findingsByCheck.map((f) => (f.targetedFaults?.genericErrors || []).join(' ') || `${f.checkName} found no fault`).join(' ');
         if (!/[.?!]$/.test(continueNote)) continueNote += '.';
       }
       sendConfirm(`${continueNote} Continue to the default diagnostic chain (Open_Problems -> fmadm -> hwdiag -> every targeted check)?`, 'continueToDefault');
       return res.end();
     }
-    if (skipTargetedCheck && targetedCheckName) {
-      defaultFlowNotice = `Continuing to the default ILOM diagnostic chain — ${targetedCheckName} found nothing and the user confirmed running the full chain…`;
+    if (skipTargetedCheck && targetedCheckNames.length > 0) {
+      defaultFlowNotice = `Continuing to the default ILOM diagnostic chain — ${targetedCheckNames.join(', ')} found nothing and the user confirmed running the full chain…`;
       defaultFlowSourceTag = `${defaultFlowSourceTag}-user-confirmed-continue`;
     }
     console.log(`[diagnose] ${defaultFlowSourceTag || 'collector-passing'}: ${defaultFlowNotice || `${serialNumber} mfg-collector-confirmed passing`} — for ${serialNumber}`);
