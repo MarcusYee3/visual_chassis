@@ -1489,6 +1489,29 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
+  // PARTNER_DIAGNOSTICS_TEST (PDT_TEST) failing has a known, self-explanatory fix — a bad seat on
+  // the UBB (GPU baseboard) tray — so there's nothing live diagnostics would add beyond what the
+  // check name itself already says; short-circuit straight to that finding, same as a technician's
+  // own already-documented ticket comment above. Highlighted via components:['gbb'] (the GBB Tray
+  // header/section this app's UI groups the GPU baseboard tray under — same component key every
+  // other GBB-level fault in this file uses) rather than any specific part, since there's no
+  // specific OSFP/IOU this points at — it's the whole tray's seating. Scoped to just Failed
+  // Testcase/Failure Message, same as the CHECK_ILOM_FAULTS check below.
+  if ([info.failedTestcase, info.failureMessage].some((s) => /PARTNER_DIAGNOSTICS_TEST|PDT_TEST/i.test(s))) {
+    return {
+      notice: `Jira ${info.key}: names PARTNER_DIAGNOSTICS_TEST (PDT_TEST) — known failure signature, using it directly instead of opening an ILOM session…`,
+      sourceTag: `jira ${info.key} -> PARTNER_DIAGNOSTICS_TEST`,
+      targetedCheckName: null,
+      resolvedFaults: {
+        components: ['gbb'], psuPorts: [], retimerIds: [], e1sIds: [], pcieFaults: [], fanIds: [],
+        genericErrors: ['PARTNER_DIAGNOSTICS_TEST (PDT_TEST) failed — reseat the UBB tray'],
+        cableFaults: [], cableEndFaults: [], pcieSwitchIds: [], dimmIds: [],
+      },
+      resolvedRaw: info.failureMessage || info.failedTestcase,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
+    };
+  }
+
   // CHECK_ILOM_FAULTS has no dedicated script — it's directly observable by the default chain
   // itself (Open_Problems/fmadm already surface exactly this), same reasoning mfg-collector's own
   // ILOM_OBSERVABLE_CHECKS gate uses for a live-table match (see describeDefaultFlow). Scoped to

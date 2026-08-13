@@ -24,11 +24,26 @@ const CATEGORY_COLORS = {
   teal: { background: 'linear-gradient(180deg, #1a4a4a 0%, #123636 100%)', border: '#2a7a7a', color: '#a8dcdc' },
 };
 
+const faultBorder = '1px solid #ff4444';
+// Intensified per user request — the previous two-layer glow (12px/24px, 0.5/0.2 opacity) read as
+// too subtle once every raw part is always on screen at once instead of hidden behind a collapsed
+// tray. A third, wider/softer outer layer plus higher opacities makes a fault visibly jump out.
+const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
+
 // Shared look for both the (still-interactive) per-OSFP-module "back" link and the plain,
 // non-interactive category section headers below — same colored pill, minus the pointer/hover
-// affordances when nothing is actually clickable.
-const categoryHeaderStyle = (colorKey = 'blue', interactive = false) => {
-  const c = CATEGORY_COLORS[colorKey] || CATEGORY_COLORS.blue;
+// affordances when nothing is actually clickable. `faulted` overrides colorKey with the same red
+// faultBorder/faultGlow every other part uses — currently only wired up for the GBB Tray header
+// (see has('gbb') below), for a fault that names the whole tray rather than one specific part in
+// it (e.g. a PARTNER_DIAGNOSTICS_TEST/PDT_TEST failure, whose fix genuinely is "reseat the UBB
+// tray", not one OSFP/IOU) — deliberately not wired up for the other category headers here, since
+// a broader "any 'gbb'/'gpu'/etc. component = header glow" rule was tried and reverted before as
+// too imprecise; keep this scoped to cases with a real, specific reason a whole tray (not a part)
+// is the right thing to highlight.
+const categoryHeaderStyle = (colorKey = 'blue', interactive = false, faulted = false) => {
+  const c = faulted
+    ? { background: 'linear-gradient(180deg, #5c1818 0%, #3c1010 100%)', border: '#cc3333', color: '#ff9999' }
+    : (CATEGORY_COLORS[colorKey] || CATEGORY_COLORS.blue);
   return {
     ...(interactive ? { cursor: 'pointer', transition: 'all 0.15s' } : {}),
     padding: '5px 10px',
@@ -43,18 +58,13 @@ const categoryHeaderStyle = (colorKey = 'blue', interactive = false) => {
     alignItems: 'center',
     gap: '6px',
     background: c.background,
-    border: `1px solid ${c.border}`,
+    border: faulted ? faultBorder : `1px solid ${c.border}`,
     borderRadius: '3px',
-    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
+    boxShadow: faulted ? `${faultGlow}, inset 0 1px 0 rgba(255,255,255,0.06)` : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
     userSelect: 'none',
+    animation: faulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
   };
 };
-
-const faultBorder = '1px solid #ff4444';
-// Intensified per user request — the previous two-layer glow (12px/24px, 0.5/0.2 opacity) read as
-// too subtle once every raw part is always on screen at once instead of hidden behind a collapsed
-// tray. A third, wider/softer outer layer plus higher opacities makes a fault visibly jump out.
-const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
 
 // Same physical OSFP-slot -> IOU convention as server/src/routes/diagnose.js's own
 // OSFP_SLOT_TO_IOU (which parses lionking_OSFP.py's loopback link results) — each numbered OSFP
@@ -175,7 +185,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
             the 2 physical OSFP BDs (BD 1 = OSFP 1-4, BD 2 = OSFP 5-8), each holding its own 2
             cable pairs. */}
         <div style={{ width: '100%' }}>
-          <div style={categoryHeaderStyle('blue')}>GBB Tray</div>
+          <div style={categoryHeaderStyle('blue', false, has('gbb'))}>GBB Tray</div>
           <div style={{ display: 'flex', gap: '8px' }}>
             {OSFP_BD_GROUPS.map((bd) => (
               <div key={bd.name} style={{
