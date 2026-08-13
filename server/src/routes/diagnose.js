@@ -407,12 +407,20 @@ function parseHwdiagFabricTestAll(output) {
   let m;
   let total = 0;
   let failedCount = 0;
+  // Tracks which switches printed a Retimer line at all (pass OR fail — presence, not status), for
+  // the missing-Retimer check below. Every switch consistently prints its own RetimerN line in
+  // every real sample seen so far (unlike GPU, which only about half the switches carry, by design
+  // — not every real "all healthy" capture even has GPU lines, so that half can't be used as a
+  // fault signal) — a switch with no Retimer line at all wasn't even attempted/reported by the
+  // fabric test, which is a worse sign than a reported FAILED, not a lesser one.
+  const retimerSeenPerSwitch = new Set();
   while ((m = lineRe.exec(output)) !== null) {
     total++;
     const [, swNumStr, partType, partNumStr, status] = m;
+    const swNum = parseInt(swNumStr, 10);
+    if (partType === 'Retimer') retimerSeenPerSwitch.add(swNum);
     if (status.toUpperCase() !== 'FAILED') continue;
     failedCount++;
-    const swNum = parseInt(swNumStr, 10);
     if (!switchFailures.has(swNum)) switchFailures.set(swNum, []);
     switchFailures.get(swNum).push(`${partType}${partNumStr}`);
     addComp(partType === 'GPU' ? 'gpu' : 'iob');
@@ -432,6 +440,30 @@ function parseHwdiagFabricTestAll(output) {
     faults.pcieSwitchIds = [...switchFailures.keys()].sort((a, b) => a - b);
     for (const [swNum, parts] of [...switchFailures.entries()].sort((a, b) => a[0] - b[0])) {
       faults.genericErrors.push(`hwdiag system fabric test all: PCIE_SW${swNum} failed (${parts.join(', ')} link down)`);
+    }
+  }
+
+  // A switch that printed a "SWITCH: PCIE_SWn" header but never got its own Retimer line at all
+  // (not even a FAILED one) — confirmed real sample, GPU_JBOG_TEST chassis, 2026-08-13: PCIE_SW2
+  // reported only SSD3 (PASSED), no Retimer2 line whatsoever, while every one of the other 7
+  // switches — including three others that also carried no GPU line — each still had their own
+  // RetimerN entry. Every visible line in that capture said PASSED, so the FAILED-only check above
+  // found nothing; this is the gap that missed it. total > 0 keeps this scoped to format A (format
+  // B never prints "SWITCH:" headers, so switchesSeen would be empty there anyway).
+  if (total > 0) {
+    const switchesSeen = new Set();
+    const switchHeaderRe = /SWITCH:\s*PCIE_SW(\d+)/gi;
+    let hm;
+    while ((hm = switchHeaderRe.exec(output)) !== null) switchesSeen.add(parseInt(hm[1], 10));
+    const missingRetimerSwitches = [...switchesSeen].filter((n) => !retimerSeenPerSwitch.has(n)).sort((a, b) => a - b);
+    if (missingRetimerSwitches.length > 0) {
+      faults.pcieSwitchIds = [...new Set([...(faults.pcieSwitchIds || []), ...missingRetimerSwitches])].sort((a, b) => a - b);
+      for (const swNum of missingRetimerSwitches) {
+        faults.genericErrors.push(
+          `hwdiag system fabric test all: PCIE_SW${swNum} has no Retimer${swNum} link result at all (every other switch printed one) — the retimer likely failed to train rather than just failing a trained link; verify/reseat it`
+        );
+      }
+      addComp('iob');
     }
   }
 
