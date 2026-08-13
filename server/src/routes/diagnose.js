@@ -1967,6 +1967,33 @@ router.get('/', async (req, res) => {
         console.error(`[diagnose] chassis identification (show /SYS) failed for ${effectiveSn}${nodeSuffix}:`, err.message);
       }
 
+      // VERIFY_OSFP_LINKS (lionking_OSFP.py) and UPDATE_GXR3_FW (gxr3_fw_update_check) both run as
+      // independent local child processes (localExec) — neither one ever opens a session against
+      // this node's own ILOM, so there's no real reason for them to wait for the Open_Problems/
+      // fmadm/hwdiag SSH chain below (Step 2/3, ~35s of scripted delay alone, before real ILOM
+      // round-trip time) to finish first the way the old strictly-sequential Step 3 for-loop made
+      // them. Kicked off here instead, so their own real work (each up to a 30s timeout) overlaps
+      // with that SSH chain's wall-clock time rather than stacking fully after it — the for-loop
+      // below just awaits these already-in-flight promises when it reaches them. UPDATE_GXR3_FW
+      // still can't start until VERIFY_OSFP_LINKS's own fixtureSn discovery is known (confirmed on
+      // real hardware: UPDATE_GXR3_FW's SFCS MAC lookup fails every time without it) — chained via
+      // .then() so that real dependency is preserved exactly, just moved off the ILOM SSH session's
+      // critical path. Falls back to effectiveSn (matching the for-loop's own fallback) if
+      // VERIFY_OSFP_LINKS itself rejects. Both `.catch(() => {})` calls exist solely to prevent a
+      // Node "unhandled rejection" warning between being kicked off here and actually being
+      // awaited (with real error handling) down in the for-loop.
+      const verifyOsfpLinksPromise = runLionkingOSFPCheck(effectiveSn);
+      verifyOsfpLinksPromise.catch(() => {});
+      const gxr3FwUpdatePromise = verifyOsfpLinksPromise.then(
+        (result) => runGxr3FwUpdateCheck(result.fixtureSn || effectiveSn),
+        () => runGxr3FwUpdateCheck(effectiveSn),
+      );
+      gxr3FwUpdatePromise.catch(() => {});
+      const prewarmedTargetedChecks = {
+        VERIFY_OSFP_LINKS: () => verifyOsfpLinksPromise,
+        UPDATE_GXR3_FW: () => gxr3FwUpdatePromise,
+      };
+
       // Step 2: SSH to ILOM using native ssh + sshpass. Passing the command as an ssh remote-
       // command *argument* (`ssh ... 'show /System/Open_Problems'`) was observed to hang
       // indefinitely on some devices even with -tt forcing a pty — this ILOM's restricted CLI
@@ -2107,7 +2134,12 @@ router.get('/', async (req, res) => {
       // every time otherwise). Falls back to effectiveSn if VERIFY_OSFP_LINKS's own run didn't
       // yield one (e.g. its script errored before reaching that lookup) — no worse than before.
       let discoveredFixtureSn = null;
-      for (const [checkName, targetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+      for (const [checkName, defaultTargetedCheck] of Object.entries(MFG_COLLECTOR_TARGETED_CHECKS)) {
+        // Swaps in the already-in-flight promise kicked off before Step 2 above for
+        // VERIFY_OSFP_LINKS/UPDATE_GXR3_FW — every branch below still calls `targetedCheck(...)`
+        // exactly as before, it just now resolves whatever's left of a call that's often already
+        // mostly (or fully) done by the time execution reaches here, instead of only starting now.
+        const targetedCheck = prewarmedTargetedChecks[checkName] || defaultTargetedCheck;
         console.log(`[diagnose] running targeted check ${checkName} for ${effectiveSn}${nodeSuffix}`);
         const targetSnForCheck = (checkName === 'UPDATE_GXR3_FW' && discoveredFixtureSn) ? discoveredFixtureSn : effectiveSn;
 

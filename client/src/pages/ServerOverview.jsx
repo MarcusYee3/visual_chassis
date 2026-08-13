@@ -24,11 +24,26 @@ const CATEGORY_COLORS = {
   teal: { background: 'linear-gradient(180deg, #1a4a4a 0%, #123636 100%)', border: '#2a7a7a', color: '#a8dcdc' },
 };
 
+const faultBorder = '1px solid #ff4444';
+// Intensified per user request — the previous two-layer glow (12px/24px, 0.5/0.2 opacity) read as
+// too subtle once every raw part is always on screen at once instead of hidden behind a collapsed
+// tray. A third, wider/softer outer layer plus higher opacities makes a fault visibly jump out.
+const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
+
 // Shared look for both the (still-interactive) per-OSFP-module "back" link and the plain,
 // non-interactive category section headers below — same colored pill, minus the pointer/hover
-// affordances when nothing is actually clickable.
-const categoryHeaderStyle = (colorKey = 'blue', interactive = false) => {
-  const c = CATEGORY_COLORS[colorKey] || CATEGORY_COLORS.blue;
+// affordances when nothing is actually clickable. `faulted` overrides colorKey entirely (red, same
+// faultBorder/faultGlow as every other part) — some real diagnostic output only ever names a whole
+// category (e.g. a raw "GPU BASEBOARD"/"/SYS/GBB" mention with no specific slot/IOU in it, parsed
+// into faults.components as a bare 'gpu'/'gbb' by parseIlomProblems' fallback matches), with no
+// specific-ID array entry for any single part to highlight instead. Before this, that kind of fault
+// was completely invisible on the chassis — it only ever showed up as text in the sidebar's "Faults
+// detected: gpu, gbb" status line — so the header is the fallback place a coarse, unmappable fault
+// still has to show up.
+const categoryHeaderStyle = (colorKey = 'blue', interactive = false, faulted = false) => {
+  const c = faulted
+    ? { background: 'linear-gradient(180deg, #5c1818 0%, #3c1010 100%)', border: '#cc3333', color: '#ff9999' }
+    : (CATEGORY_COLORS[colorKey] || CATEGORY_COLORS.blue);
   return {
     ...(interactive ? { cursor: 'pointer', transition: 'all 0.15s' } : {}),
     padding: '5px 10px',
@@ -43,18 +58,13 @@ const categoryHeaderStyle = (colorKey = 'blue', interactive = false) => {
     alignItems: 'center',
     gap: '6px',
     background: c.background,
-    border: `1px solid ${c.border}`,
+    border: faulted ? faultBorder : `1px solid ${c.border}`,
     borderRadius: '3px',
-    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
+    boxShadow: faulted ? `${faultGlow}, inset 0 1px 0 rgba(255,255,255,0.06)` : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(0,0,0,0.3)',
     userSelect: 'none',
+    animation: faulted ? 'faultPulse 1.4s ease-in-out infinite' : 'none',
   };
 };
-
-const faultBorder = '1px solid #ff4444';
-// Intensified per user request — the previous two-layer glow (12px/24px, 0.5/0.2 opacity) read as
-// too subtle once every raw part is always on screen at once instead of hidden behind a collapsed
-// tray. A third, wider/softer outer layer plus higher opacities makes a fault visibly jump out.
-const faultGlow = '0 0 18px rgba(255,68,68,0.75), 0 0 36px rgba(255,68,68,0.4), 0 0 54px rgba(255,68,68,0.15)';
 
 // Same physical OSFP-slot -> IOU convention as server/src/routes/diagnose.js's own
 // OSFP_SLOT_TO_IOU (which parses lionking_OSFP.py's loopback link results) — each numbered OSFP
@@ -175,7 +185,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
             the 2 physical OSFP BDs (BD 1 = OSFP 1-4, BD 2 = OSFP 5-8), each holding its own 2
             cable pairs. */}
         <div style={{ width: '100%' }}>
-          <div style={categoryHeaderStyle('blue')}>GBB Tray</div>
+          <div style={categoryHeaderStyle('blue', false, has('gbb'))}>GBB Tray</div>
           <div style={{ display: 'flex', gap: '8px' }}>
             {OSFP_BD_GROUPS.map((bd) => (
               <div key={bd.name} style={{
@@ -290,7 +300,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
 
         {/* Nvidia B300 GPU Baseboard */}
         <div style={{ width: '100%' }}>
-          <div style={categoryHeaderStyle('purple')}>Nvidia B300 GPU Baseboard — Fan Modules</div>
+          <div style={categoryHeaderStyle('purple', false, has('gpu'))}>Nvidia B300 GPU Baseboard — Fan Modules</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
             {[25, 19, 13, 7, 1].map((rowStart) => (
               <div key={rowStart} style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
@@ -305,7 +315,7 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
 
         {/* IOB Tray */}
         <div style={{ width: '100%' }}>
-          <div style={categoryHeaderStyle('green')}>IOB Tray</div>
+          <div style={categoryHeaderStyle('green', false, has('iob'))}>IOB Tray</div>
           {/* Left/right columns are just a couple of single-item cards (E1S board, BMC, ROT,
               filler) and don't need much room — narrowed so the center Retimer BD column (which
               has to fit 8-wide OSFP + PCIE SW rows) gets the width it actually needs instead of
@@ -407,9 +417,10 @@ function ServerOverview({ refreshKey = 0, faults = EMPTY_FAULTS, reportMode = fa
         </div>
 
         {/* PSU — category color is teal, not red, so a healthy PSU section can't be mistaken for
-            a faulted one (PSUPort.module.css's own backplate was changed for the same reason). */}
+            a faulted one (PSUPort.module.css's own backplate was changed for the same reason);
+            categoryHeaderStyle still switches it to red when has('psu') is genuinely true. */}
         <div style={{ width: '100%' }}>
-          <div style={categoryHeaderStyle('teal')}>PSU</div>
+          <div style={categoryHeaderStyle('teal', false, has('psu'))}>PSU</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '3px' }}>
               {topRow.map((port) => (
