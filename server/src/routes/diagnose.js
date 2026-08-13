@@ -223,10 +223,32 @@ function parseIlomProblems(output) {
 
   const suspectBlocks = output.split(/(?=Suspect \d+ of \d+)/i);
   for (const block of suspectBlocks) {
+    if (!/^Suspect \d+ of \d+/i.test(block.trim())) continue; // leading fragment before the first real block
     const certaintyMatch = block.match(/Certainty\s*:\s*(\d+)%/i);
     const resourceMatch = block.match(/Resource\s*\r?\n\s*Location\s*:\s*(\S+)/i);
-    if (!resourceMatch) continue;
-    addPcieFault(resourceMatch[1], certaintyMatch ? parseInt(certaintyMatch[1], 10) : null);
+    if (resourceMatch) {
+      addPcieFault(resourceMatch[1], certaintyMatch ? parseInt(certaintyMatch[1], 10) : null);
+      continue;
+    }
+    // fmadm only prints a dedicated "Resource" section when it can pinpoint a specific PCIe/IOU/SSD
+    // carrier (see fmadm_faulty_output_format memory) — a broader, chassis-level fault only ever
+    // gets an FRU-level location, which isn't a part this app can highlight individually. Confirmed
+    // real sample, SN 2633YW10ME, 2026-08-12: a "fault.chassis.power.fail" Suspect block naming
+    // Affects:/SYS/GBB (100% certainty, FRU Location also /SYS/GBB, no Resource section at all) was
+    // previously discarded here entirely — only the coarse "gbb" component label (from the separate
+    // whole-text regex above) ever reached the UI, with the actual problem class/description text
+    // silently dropped. Surfaced as a genericErrors message instead (which the client already
+    // renders as its own warning banner, and which getLoggableParts already picks up as a loggable
+    // "part" — see client/src/utils/loggableParts.js) rather than adding yet another fault field.
+    const problemClassMatch = block.match(/Problem class\s*:\s*(\S+)/i);
+    const affectsMatch = block.match(/Affects\s*:\s*(\S+)/i) || block.match(/FRU[\s\S]*?Location\s*:\s*(\S+)/i);
+    if (!problemClassMatch && !affectsMatch) continue; // not enough here to say anything useful
+    const descriptionMatch = block.match(/Description\s*:\s*([\s\S]*?)\n\s*\n/i);
+    const description = descriptionMatch ? descriptionMatch[1].replace(/\s+/g, ' ').trim() : null;
+    const label = [problemClassMatch?.[1], affectsMatch?.[1]].filter(Boolean).join(' ');
+    faults.genericErrors.push(
+      `${label || 'fmadm fault'}${certaintyMatch ? ` (${certaintyMatch[1]}% certainty)` : ''}: ${description || 'see raw output for detail'}`
+    );
   }
 
   return { faults, raw: output, fanCapacityAlert };
