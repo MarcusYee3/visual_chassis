@@ -1454,6 +1454,23 @@ async function describeJiraFlow(jiraLink) {
     };
   }
 
+  // CHECK_ILOM_FAULTS has no dedicated script — it's directly observable by the default chain
+  // itself (Open_Problems/fmadm already surface exactly this), same reasoning mfg-collector's own
+  // ILOM_OBSERVABLE_CHECKS gate uses for a live-table match (see describeDefaultFlow). Scoped to
+  // just the Failed Testcase/Failure Message fields (not summary/comments, unlike the broader
+  // 4-field scans below) — those two are specifically where a ticket names which check failed.
+  // Checked before the POWER_ON scan/checkCodes match below so it wins even if the ticket also
+  // happens to carry another check's code — every *other* matched check keeps running its own
+  // dedicated command chain first and then asks whether to continue to the default chain.
+  if ([info.failedTestcase, info.failureMessage].some((s) => /CHECK_ILOM_FAULTS?/i.test(s))) {
+    return {
+      notice: `Jira ${info.key}: names CHECK_ILOM_FAULTS — running the default ILOM diagnostic chain directly (no dedicated script; Open_Problems/fmadm already cover this)…`,
+      sourceTag: `jira ${info.key} -> CHECK_ILOM_FAULTS (default chain)`,
+      targetedCheckName: null,
+      chassisModel, isE5E6Chassis, fixtureSn: info.fixtureSn, mentionsVerifyOsfpLinks: info.mentionsVerifyOsfpLinks, mentionsHostnicFwRemote: info.mentionsHostnicFwRemote,
+    };
+  }
+
   // "POWER_ON" (e.g. a "Failed Testcase: 11_POWER_ON" description field, or the
   // HOST_POWER_ON_PRETEST stage) is matched by exact checkName below when it fits the numbered
   // <N>_<CHECKNAME> shape, but not every ticket phrases it that way — scan the summary, the
